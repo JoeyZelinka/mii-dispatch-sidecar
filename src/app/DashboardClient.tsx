@@ -14,6 +14,7 @@ import {
 } from '@mui/material';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
+import SlideshowIcon from '@mui/icons-material/Slideshow';
 import { SCENARIOS } from '@/lib/mii/seed';
 import { miiStore, useIncidents, useAudit, useUnits } from '@/lib/mii/store';
 import ScenarioCard from '@/components/ScenarioCard';
@@ -55,6 +56,38 @@ export default function DashboardClient() {
         radio, CAD, police systems, or external agencies. All logic is deterministic and explainable;
         no AI/LLM calls are made.
       </Alert>
+
+      <Card
+        sx={{
+          mb: 4,
+          borderColor: 'primary.main',
+          borderWidth: 1,
+          borderStyle: 'solid',
+          background: 'linear-gradient(90deg, rgba(78,161,255,0.10), rgba(78,161,255,0.02))',
+        }}
+      >
+        <CardContent
+          sx={{ display: 'flex', alignItems: 'center', gap: 2, flexWrap: 'wrap' }}
+        >
+          <SlideshowIcon color="primary" sx={{ fontSize: 36 }} />
+          <Box sx={{ flexGrow: 1, minWidth: 240 }}>
+            <Typography variant="h6">Open Guided Demo</Typography>
+            <Typography variant="body2" color="text.secondary">
+              Run the scripted MII_lite walkthrough with replay controls, patent mapping, and
+              presenter notes.
+            </Typography>
+          </Box>
+          <Button
+            component={Link}
+            href="/demo"
+            variant="contained"
+            size="large"
+            startIcon={<SlideshowIcon />}
+          >
+            Open Guided Demo
+          </Button>
+        </CardContent>
+      </Card>
 
       <Typography variant="overline" color="text.secondary">
         Run a seeded scenario

@@ -1,0 +1,8 @@
+[build]
+  command = "npm run build"
+  # Matches the CI distDir from next.config.ts (Netlify sets CI=true, so the
+  # build writes to .next, not the local-only .next.nosync).
+  publish = ".next"
+
+[[plugins]]
+  package = "@netlify/plugin-nextjs"

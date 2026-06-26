@@ -5,6 +5,7 @@ import type {
   AuditEvent,
   IncidentContext,
   MockCadPayload,
+  ReplayState,
   TranscriptLine,
   Unit,
   UnitRecommendation,
@@ -15,12 +16,15 @@ import {
   type MiiState,
   applySuggestedFields as engineApplyFields,
   assignUnit as engineAssignUnit,
+  clearScenarioReplay as engineClearReplay,
   closeIncident as engineCloseIncident,
   confirmAsr as engineConfirmAsr,
   confirmSensitiveField as engineConfirmSensitive,
+  processScenarioReplayNext as engineReplayNext,
   rejectField as engineRejectField,
   resolveFieldConflict as engineResolveConflict,
   runScenario as engineRunScenario,
+  startScenarioReplay as engineStartReplay,
   submitMockCad as engineSubmitMockCad,
 } from './processor';
 
@@ -35,6 +39,7 @@ function freshState(): MiiState {
     recommendations: [],
     audit: [],
     mockCadPayloads: {},
+    replay: null,
   };
 }
 
@@ -46,6 +51,8 @@ function loadState(): MiiState {
     const parsed = JSON.parse(raw) as MiiState;
     // Basic shape guard; fall back to fresh on anything unexpected.
     if (!parsed.units || !Array.isArray(parsed.units)) return freshState();
+    // Forward-compat: older persisted state predates the replay slice.
+    if (parsed.replay === undefined) parsed.replay = null;
     return parsed;
   } catch {
     return freshState();
@@ -103,6 +110,15 @@ export const miiStore = {
   // --- actions ---
   runScenario(scenarioId: string) {
     return update((d) => engineRunScenario(d, scenarioId, REVIEWER));
+  },
+  startReplay(scenarioId: string) {
+    return update((d) => engineStartReplay(d, scenarioId, REVIEWER));
+  },
+  stepReplay() {
+    return update((d) => engineReplayNext(d));
+  },
+  clearReplay() {
+    update((d) => engineClearReplay(d));
   },
   confirmAsr(incidentId: string) {
     update((d) => engineConfirmAsr(d, incidentId, REVIEWER));
@@ -171,4 +187,7 @@ export function useAllRecommendations(): UnitRecommendation[] {
 }
 export function useMockCadPayload(incidentId: string): MockCadPayload | undefined {
   return useStore((s) => s.mockCadPayloads[incidentId]);
+}
+export function useReplay(): ReplayState | null {
+  return useStore((s) => s.replay);
 }

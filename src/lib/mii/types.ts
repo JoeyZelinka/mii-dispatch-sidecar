@@ -159,6 +159,23 @@ export interface CodeEntry {
   notes: string;
 }
 
+// --- Guided demo replay ---
+
+export interface ReplayState {
+  scenarioId: string;
+  scenarioTitle: string;
+  correlationId: string;
+  baseTime: number;
+  currentLineIndex: number; // lines processed so far
+  totalLines: number;
+  status: 'ready' | 'running' | 'paused' | 'completed';
+  routingOpened: boolean;
+  activeIncidentId?: string;
+  lastLineId?: string;
+  processedLineIds: string[];
+  completed: boolean;
+}
+
 // --- Seed/scenario definitions ---
 
 export interface SeedTranscriptLine {
