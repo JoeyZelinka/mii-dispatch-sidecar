@@ -1,12 +1,16 @@
 import type { NextConfig } from "next";
 
+// Locally this project lives under ~/Desktop, which macOS iCloud Drive syncs.
+// iCloud races the build and corrupts files inside `.next` (ENOENT on temp
+// manifest files). macOS excludes any path ending in `.nosync` from iCloud, so
+// locally we write the build output there.
+//
+// In CI / on Netlify there is no iCloud, and the @netlify/plugin-nextjs expects
+// the standard `.next` directory — so use the default output dir there.
+const isCI = process.env.CI === "true" || process.env.NETLIFY === "true";
+
 const nextConfig: NextConfig = {
-  // This project lives under ~/Desktop, which macOS iCloud Drive syncs. iCloud
-  // races the build and snatches/duplicates files inside `.next` (causing ENOENT
-  // on temp manifest files). macOS excludes any path ending in `.nosync` from
-  // iCloud, so we point the build output there to stop the corruption.
-  // Harmless on non-iCloud machines — it's just the build directory name.
-  distDir: ".next.nosync",
+  distDir: isCI ? ".next" : ".next.nosync",
 };
 
 export default nextConfig;
