@@ -23,15 +23,19 @@ import RecordVoiceOverIcon from '@mui/icons-material/RecordVoiceOver';
 import MenuBookIcon from '@mui/icons-material/MenuBook';
 import HistoryIcon from '@mui/icons-material/History';
 import RadioIcon from '@mui/icons-material/Radio';
+import SlideshowIcon from '@mui/icons-material/Slideshow';
 import RestartAltIcon from '@mui/icons-material/RestartAlt';
+import LogoutIcon from '@mui/icons-material/Logout';
 import Link from 'next/link';
-import { usePathname } from 'next/navigation';
+import { usePathname, useRouter } from 'next/navigation';
 import { miiStore } from '@/lib/mii/store';
 
 const drawerWidth = 248;
+const AUTH_ENABLED = process.env.NEXT_PUBLIC_DEMO_AUTH_ENABLED === 'true';
 
 const NAV: { href: string; label: string; icon: React.ReactNode }[] = [
   { href: '/', label: 'Dashboard', icon: <DashboardIcon fontSize="small" /> },
+  { href: '/demo', label: 'Guided Demo', icon: <SlideshowIcon fontSize="small" /> },
   { href: '/incidents', label: 'Incidents', icon: <LocalFireDepartmentIcon fontSize="small" /> },
   { href: '/transcripts', label: 'Transcripts', icon: <RecordVoiceOverIcon fontSize="small" /> },
   { href: '/units', label: 'Units', icon: <DirectionsCarIcon fontSize="small" /> },
@@ -41,6 +45,7 @@ const NAV: { href: string; label: string; icon: React.ReactNode }[] = [
 
 export default function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
+  const router = useRouter();
 
   const isActive = (href: string) => {
     if (href === '/') return pathname === '/';
@@ -52,6 +57,21 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
       miiStore.reset();
     }
   };
+
+  const handleLogout = async () => {
+    try {
+      await fetch('/api/demo-auth/logout', { method: 'POST' });
+    } catch {
+      // best-effort — clearing the cookie server-side is the source of truth
+    }
+    router.replace('/demo-login');
+    router.refresh();
+  };
+
+  // The login screen renders standalone, without the dispatch console chrome.
+  if (pathname === '/demo-login') {
+    return <>{children}</>;
+  }
 
   return (
     <Box sx={{ display: 'flex', minHeight: '100vh' }}>
@@ -87,6 +107,19 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
               Reset Demo Data
             </Button>
           </Tooltip>
+          {AUTH_ENABLED && (
+            <Tooltip title="Clear your demo session and return to the access screen">
+              <Button
+                size="small"
+                color="inherit"
+                variant="outlined"
+                startIcon={<LogoutIcon />}
+                onClick={handleLogout}
+              >
+                End Demo Session
+              </Button>
+            </Tooltip>
+          )}
         </Toolbar>
       </AppBar>
 

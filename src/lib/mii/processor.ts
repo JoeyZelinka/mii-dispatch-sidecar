@@ -2,6 +2,7 @@ import type {
   CueEvent,
   IncidentContext,
   MockCadPayload,
+  ReplayState,
   SuggestedField,
   TranscriptLine,
   Unit,
@@ -33,6 +34,7 @@ export interface MiiState {
   recommendations: UnitRecommendation[];
   audit: import('./types').AuditEvent[];
   mockCadPayloads: Record<string, MockCadPayload>;
+  replay: ReplayState | null;
 }
 
 const SYSTEM_ACTOR = 'MII_lite engine';
@@ -429,16 +431,8 @@ export function runScenario(
   const ctx: ScenarioCtx = { routingOpened: false };
   const baseTime = Date.parse(nowIso());
 
-  scenario.lines.forEach((seed, idx) => {
-    const line: TranscriptLine = {
-      id: makeId('line'),
-      speaker: seed.speaker,
-      text: seed.text,
-      timestamp: new Date(baseTime + idx * 4000).toISOString(),
-      confidence: seed.confidence,
-      processed: false,
-      cueEvents: [],
-    };
+  scenario.lines.forEach((_seed, idx) => {
+    const line = buildSeedLine(scenario, idx, baseTime);
     draft.transcriptLines.push(line);
     processTranscriptLine(draft, line, ctx, correlationId);
   });
@@ -448,6 +442,105 @@ export function runScenario(
   }
 
   return { correlationId, incidentId: ctx.activeIncidentId };
+}
+
+// Build a TranscriptLine from a seeded scenario line. Shared by instant runs
+// and guided replay so the processing path is identical.
+function buildSeedLine(
+  scenario: import('./types').Scenario,
+  idx: number,
+  baseTime: number
+): TranscriptLine {
+  const seed = scenario.lines[idx];
+  return {
+    id: makeId('line'),
+    speaker: seed.speaker,
+    text: seed.text,
+    timestamp: new Date(baseTime + idx * 4000).toISOString(),
+    confidence: seed.confidence,
+    processed: false,
+    cueEvents: [],
+  };
+}
+
+// --- Guided demo replay (same deterministic path, one line at a time) -----
+
+export function startScenarioReplay(
+  draft: MiiState,
+  scenarioId: string,
+  actor: string = SYSTEM_ACTOR
+): ReplayState | undefined {
+  const scenario = getScenario(scenarioId);
+  if (!scenario) return undefined;
+  const correlationId = newCorrelationId();
+  audit(draft, {
+    correlationId,
+    action: 'SCENARIO_STARTED',
+    actor,
+    summary: `Guided replay started: ${scenario.title}`,
+  });
+  const replay: ReplayState = {
+    scenarioId,
+    scenarioTitle: scenario.title,
+    correlationId,
+    baseTime: Date.parse(nowIso()),
+    currentLineIndex: 0,
+    totalLines: scenario.lines.length,
+    status: 'ready',
+    routingOpened: false,
+    activeIncidentId: undefined,
+    lastLineId: undefined,
+    processedLineIds: [],
+    completed: false,
+  };
+  draft.replay = replay;
+  return replay;
+}
+
+export function processScenarioReplayNext(draft: MiiState): ReplayState | undefined {
+  const replay = draft.replay;
+  if (!replay || replay.completed) return replay ?? undefined;
+  const scenario = getScenario(replay.scenarioId);
+  if (!scenario) return replay;
+
+  const idx = replay.currentLineIndex;
+  if (idx >= scenario.lines.length) {
+    replay.completed = true;
+    replay.status = 'completed';
+    return replay;
+  }
+
+  const line = buildSeedLine(scenario, idx, replay.baseTime);
+  draft.transcriptLines.push(line);
+
+  // Reconstruct the scenario context, process exactly one line, persist it back.
+  const ctx: ScenarioCtx = {
+    routingOpened: replay.routingOpened,
+    activeIncidentId: replay.activeIncidentId,
+  };
+  processTranscriptLine(draft, line, ctx, replay.correlationId);
+
+  replay.routingOpened = ctx.routingOpened;
+  replay.activeIncidentId = ctx.activeIncidentId;
+  replay.lastLineId = line.id;
+  replay.processedLineIds.push(line.id);
+  replay.currentLineIndex = idx + 1;
+  replay.status = 'running';
+
+  if (replay.currentLineIndex >= scenario.lines.length) {
+    replay.completed = true;
+    replay.status = 'completed';
+    // Mirror the instant-run final recommendation refresh.
+    if (replay.activeIncidentId) {
+      recommendUnitsFor(draft, replay.activeIncidentId, replay.correlationId);
+    }
+  }
+
+  return replay;
+}
+
+export function clearScenarioReplay(draft: MiiState): void {
+  draft.replay = null;
 }
 
 // --- recommendations -----------------------------------------------------

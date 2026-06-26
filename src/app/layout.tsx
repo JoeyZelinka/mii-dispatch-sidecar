@@ -15,6 +15,8 @@ export const metadata: Metadata = {
   title: 'MII_lite — Local POC',
   description:
     'MII_lite: a local, transcript-first Municipal Incident Intelligence proof of concept. Simulated data only.',
+  // Private demo — never index.
+  robots: { index: false, follow: false },
 };
 
 export default function RootLayout({
