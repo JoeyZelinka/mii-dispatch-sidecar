@@ -12,8 +12,9 @@ const roboto = Roboto({
 });
 
 export const metadata: Metadata = {
-  title: 'MII Dispatch Sidecar',
-  description: 'Municipal Incident Intelligence — Dispatcher UI',
+  title: 'MII_lite — Local POC',
+  description:
+    'MII_lite: a local, transcript-first Municipal Incident Intelligence proof of concept. Simulated data only.',
 };
 
 export default function RootLayout({

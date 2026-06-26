@@ -6,272 +6,153 @@ import {
   Card,
   CardContent,
   Typography,
-  Divider,
   Chip,
-  LinearProgress,
+  Button,
+  Alert,
+  Divider,
+  Snackbar,
 } from '@mui/material';
-import { Stack } from '@/components/Stack';
 import Link from 'next/link';
-import { useIncidents } from '@/hooks/useIncidents';
-import { useUnits } from '@/hooks/useUnits';
-import { useSuggestions } from '@/hooks/useSuggestions';
-import { useTranscripts } from '@/hooks/useTranscripts';
-import {
-  IncidentStatusChip,
-  SemanticBadge,
-  UnitStatusChip,
-  ZoneChip,
-} from '@/components/Badges';
+import { useRouter } from 'next/navigation';
+import { SCENARIOS } from '@/lib/mii/seed';
+import { miiStore, useIncidents, useAudit, useUnits } from '@/lib/mii/store';
+import ScenarioCard from '@/components/ScenarioCard';
+import PageHeader from '@/components/PageHeader';
+import { IncidentStatusChip, ZoneChip } from '@/components/StatusChip';
+import AuditTimeline from '@/components/AuditTimeline';
 import { formatRelative } from '@/lib/format';
-import type { Zone } from '@/types/mii';
-import { ZONES_LIST } from '@/services/store';
-
-const KPI = ({
-  label,
-  value,
-  hint,
-}: {
-  label: string;
-  value: React.ReactNode;
-  hint?: string;
-}) => (
-  <Card sx={{ flex: 1, minWidth: 200 }}>
-    <CardContent>
-      <Typography variant="overline" color="text.secondary">
-        {label}
-      </Typography>
-      <Typography variant="h4" sx={{ mt: 0.5, fontWeight: 700 }}>
-        {value}
-      </Typography>
-      {hint && (
-        <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
-          {hint}
-        </Typography>
-      )}
-    </CardContent>
-  </Card>
-);
 
 export default function DashboardClient() {
   const incidents = useIncidents();
+  const audit = useAudit();
   const units = useUnits();
-  const suggestions = useSuggestions();
-  const transcripts = useTranscripts();
+  const router = useRouter();
+  const [toast, setToast] = React.useState<string | null>(null);
 
-  const active = (incidents.data ?? []).filter((i) => i.status === 'ACTIVE');
-  const pending = (incidents.data ?? []).filter((i) => i.status === 'PENDING_REVIEW');
-  const available = (units.data ?? []).filter((u) => u.status === 'AVAILABLE');
-  const pendingSugs = (suggestions.data ?? []).filter((s) => s.state === 'PENDING');
+  const runScenario = (id: string) => {
+    const { incidentId } = miiStore.runScenario(id);
+    if (incidentId) {
+      router.push(`/incidents/${incidentId}`);
+    } else {
+      setToast('Admin chatter processed — no incident created (see Audit Log).');
+    }
+  };
 
-  const unitsByZone = (units.data ?? []).reduce<Record<Zone, number>>(
-    (acc, u) => {
-      acc[u.zone] = (acc[u.zone] ?? 0) + 1;
-      return acc;
-    },
-    { North: 0, Center: 0, South: 0, Beach: 0, AtLarge: 0 }
-  );
-
-  const recentlyUpdatedIds = new Set(
-    (incidents.data ?? [])
-      .filter((i) => i.status !== 'CLOSED')
-      .slice(0, 3)
-      .map((i) => i.id)
-  );
-
-  const liveFeed = (transcripts.data ?? []).slice(0, 8);
+  const recentIncidents = [...incidents]
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+    .slice(0, 5);
+  const recentAudit = [...audit].slice(-6).reverse();
 
   return (
-    <Stack spacing={3}>
-      <Stack direction="row" sx={{ alignItems: 'center', justifyContent: 'space-between' }}>
-        <Box>
-          <Typography variant="h5" sx={{ fontWeight: 700 }}>
-            Dispatcher Overview
-          </Typography>
-          <Typography variant="body2" color="text.secondary">
-            Real-time view of incidents, units, suggestions, and the live radio feed.
-          </Typography>
-        </Box>
-      </Stack>
+    <Box>
+      <PageHeader
+        title="MII_lite"
+        subtitle="Local transcript-first Municipal Incident Intelligence POC"
+      />
 
-      <Stack direction={{ xs: 'column', md: 'row' }} spacing={2}>
-        <KPI
-          label="Active Incidents"
-          value={active.length}
-          hint={`${pending.length} pending review`}
-        />
-        <KPI
-          label="Available Units"
-          value={available.length}
-          hint={`${(units.data ?? []).length} total on roster`}
-        />
-        <KPI
-          label="Pending Suggestions"
-          value={pendingSugs.length}
-          hint="Awaiting dispatcher approval"
-        />
-        <KPI label="Avg Suggestion Time" value="3.4s" hint="Across last 50 events" />
-      </Stack>
+      <Alert severity="info" sx={{ mb: 3 }}>
+        This is a local proof of concept. It uses <b>seeded simulated transcripts only</b> — no real
+        radio, CAD, police systems, or external agencies. All logic is deterministic and explainable;
+        no AI/LLM calls are made.
+      </Alert>
 
-      <Stack direction={{ xs: 'column', md: 'row' }} spacing={2} alignItems="stretch">
-        <Card sx={{ flex: 1 }}>
+      <Typography variant="overline" color="text.secondary">
+        Run a seeded scenario
+      </Typography>
+      <Box
+        sx={{
+          display: 'grid',
+          gridTemplateColumns: { xs: '1fr', md: 'repeat(3, 1fr)' },
+          gap: 2,
+          mt: 1,
+          mb: 4,
+        }}
+      >
+        {SCENARIOS.map((s) => (
+          <ScenarioCard key={s.id} scenario={s} onRun={runScenario} />
+        ))}
+      </Box>
+
+      <Box
+        sx={{
+          display: 'grid',
+          gridTemplateColumns: { xs: '1fr', lg: '1fr 1fr' },
+          gap: 2,
+        }}
+      >
+        <Card>
           <CardContent>
-            <Typography variant="overline" color="text.secondary">
-              Zone Coverage
-            </Typography>
-            <Stack spacing={1.5} sx={{ mt: 1 }}>
-              {ZONES_LIST.map((z) => {
-                const total = unitsByZone[z];
-                const avail = (units.data ?? []).filter(
-                  (u) => u.zone === z && u.status === 'AVAILABLE'
-                ).length;
-                const pct = total ? Math.round((avail / total) * 100) : 0;
-                return (
-                  <Box key={z}>
-                    <Stack direction="row" alignItems="center" spacing={1}>
-                      <ZoneChip zone={z} />
-                      <Typography variant="body2" color="text.secondary">
-                        {avail}/{total} available
-                      </Typography>
-                      <Box sx={{ flexGrow: 1 }} />
-                      <Typography variant="caption" color="text.secondary">
-                        {pct}%
-                      </Typography>
-                    </Stack>
-                    <LinearProgress
-                      variant="determinate"
-                      value={pct}
-                      sx={{ mt: 0.5, height: 6, borderRadius: 3 }}
-                    />
-                  </Box>
-                );
-              })}
-            </Stack>
-          </CardContent>
-        </Card>
-
-        <Card sx={{ flex: 2 }}>
-          <CardContent>
-            <Stack direction="row" alignItems="center" spacing={1}>
-              <Typography variant="overline" color="text.secondary">
-                Live Radio Feed
+            <Box sx={{ display: 'flex', alignItems: 'center', mb: 1 }}>
+              <Typography variant="h6" sx={{ flexGrow: 1 }}>
+                Recent Incidents
               </Typography>
-              <Chip size="small" color="success" label="LIVE" sx={{ ml: 1 }} />
-            </Stack>
-            <Divider sx={{ my: 1.5 }} />
-            <Stack spacing={1.25}>
-              {liveFeed.map((t) => (
-                <Box key={t.id}>
-                  <Stack direction="row" spacing={1} alignItems="center">
-                    <Typography variant="caption" color="text.secondary" sx={{ width: 70 }}>
-                      {formatRelative(t.ts)}
+              <Button component={Link} href="/incidents" size="small">
+                View all
+              </Button>
+            </Box>
+            {recentIncidents.length === 0 && (
+              <Typography variant="body2" color="text.secondary">
+                No incidents yet. Run a scenario above.
+              </Typography>
+            )}
+            {recentIncidents.map((inc, idx) => (
+              <Box key={inc.id}>
+                {idx > 0 && <Divider sx={{ my: 1 }} />}
+                <Box
+                  component={Link}
+                  href={`/incidents/${inc.id}`}
+                  sx={{ textDecoration: 'none', color: 'inherit', display: 'block' }}
+                >
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
+                    <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>
+                      {inc.eventNumber}
                     </Typography>
-                    <Chip size="small" variant="outlined" label={t.speaker} />
-                    <SemanticBadge type={t.semanticType} />
-                    {t.codesDetected.map((c) => (
-                      <Chip key={c} size="small" label={c} color="primary" variant="outlined" />
-                    ))}
-                  </Stack>
-                  <Typography variant="body2" sx={{ mt: 0.25, ml: 9 }}>
-                    {t.text}
+                    <IncidentStatusChip status={inc.status} />
+                    <ZoneChip zone={inc.zone} />
+                    <Box sx={{ flexGrow: 1 }} />
+                    <Typography variant="caption" color="text.secondary">
+                      {formatRelative(inc.updatedAt)}
+                    </Typography>
+                  </Box>
+                  <Typography variant="body2" color="text.secondary">
+                    {inc.currentSummary}
                   </Typography>
-                  {t.plainTalk && (
-                    <Typography
-                      variant="caption"
-                      color="text.secondary"
-                      sx={{ ml: 9, fontStyle: 'italic' }}
-                    >
-                      → {t.plainTalk}
+                  {inc.assignedUnits.length > 0 && (
+                    <Typography variant="caption" color="success.main">
+                      Responding:{' '}
+                      {inc.assignedUnits
+                        .map((id) => units.find((u) => u.id === id)?.displayName ?? id)
+                        .join(', ')}
                     </Typography>
                   )}
                 </Box>
-              ))}
-            </Stack>
+              </Box>
+            ))}
           </CardContent>
         </Card>
-      </Stack>
 
-      <Card>
-        <CardContent>
-          <Stack direction="row" alignItems="center" spacing={1}>
-            <Typography variant="overline" color="text.secondary">
-              Active Incidents — Quick View
-            </Typography>
-          </Stack>
-          <Divider sx={{ my: 1.5 }} />
-          <Stack spacing={1.25}>
-            {(incidents.data ?? [])
-              .filter((i) => i.status !== 'CLOSED')
-              .slice(0, 6)
-              .map((i) => {
-                const recently = recentlyUpdatedIds.has(i.id);
-                return (
-                  <Box
-                    key={i.id}
-                    component={Link}
-                    href={`/incidents/${i.id}`}
-                    sx={{
-                      display: 'block',
-                      textDecoration: 'none',
-                      color: 'inherit',
-                      p: 1.5,
-                      borderRadius: 1,
-                      border: '1px solid',
-                      borderColor: 'divider',
-                      transition: 'background-color 120ms',
-                      '&:hover': { backgroundColor: 'rgba(78,161,255,0.08)' },
-                      position: 'relative',
-                      ...(recently && {
-                        '&::before': {
-                          content: '""',
-                          position: 'absolute',
-                          left: 0,
-                          top: 0,
-                          bottom: 0,
-                          width: 3,
-                          borderRadius: '4px 0 0 4px',
-                          backgroundColor: 'primary.main',
-                          animation: 'pulse 2s ease-in-out infinite',
-                        },
-                        '@keyframes pulse': {
-                          '0%, 100%': { opacity: 0.4 },
-                          '50%': { opacity: 1 },
-                        },
-                      }),
-                    }}
-                  >
-                    <Stack direction="row" spacing={1} alignItems="center">
-                      <Chip size="small" label={i.natureCode} color="primary" />
-                      <Typography variant="body2" sx={{ fontWeight: 600 }}>
-                        {i.naturePlain}
-                      </Typography>
-                      <ZoneChip zone={i.zone} />
-                      <IncidentStatusChip status={i.status} />
-                      <Box sx={{ flexGrow: 1 }} />
-                      <Typography variant="caption" color="text.secondary">
-                        {formatRelative(i.updatedTs)}
-                      </Typography>
-                    </Stack>
-                    <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
-                      {i.address}
-                      {i.apt ? ` · ${i.apt}` : ''} · {i.eventNumber}
-                    </Typography>
-                    <Stack direction="row" spacing={0.5} sx={{ mt: 0.75 }}>
-                      {i.assignedUnits.map((u) => {
-                        const unit = (units.data ?? []).find((x) => x.id === u);
-                        return (
-                          <Stack key={u} direction="row" spacing={0.5} alignItems="center">
-                            <Chip size="small" label={u} variant="outlined" />
-                            {unit && <UnitStatusChip status={unit.status} />}
-                          </Stack>
-                        );
-                      })}
-                    </Stack>
-                  </Box>
-                );
-              })}
-          </Stack>
-        </CardContent>
-      </Card>
-    </Stack>
+        <Box>
+          <AuditTimeline events={recentAudit} title="Recent Audit Activity" />
+          <Box sx={{ display: 'flex', justifyContent: 'flex-end', mt: 1 }}>
+            <Button component={Link} href="/audit" size="small">
+              Full audit log
+            </Button>
+          </Box>
+        </Box>
+      </Box>
+
+      <Box sx={{ mt: 3, display: 'flex', gap: 1, flexWrap: 'wrap' }}>
+        <Chip label={`${incidents.length} incidents`} variant="outlined" />
+        <Chip label={`${audit.length} audit events`} variant="outlined" />
+      </Box>
+
+      <Snackbar
+        open={Boolean(toast)}
+        autoHideDuration={4000}
+        onClose={() => setToast(null)}
+        message={toast ?? ''}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}
+      />
+    </Box>
   );
 }

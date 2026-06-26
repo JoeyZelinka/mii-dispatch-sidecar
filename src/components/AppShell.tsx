@@ -13,6 +13,8 @@ import {
   ListItemText,
   Divider,
   Chip,
+  Button,
+  Tooltip,
 } from '@mui/material';
 import DashboardIcon from '@mui/icons-material/Dashboard';
 import LocalFireDepartmentIcon from '@mui/icons-material/LocalFireDepartment';
@@ -21,25 +23,19 @@ import RecordVoiceOverIcon from '@mui/icons-material/RecordVoiceOver';
 import MenuBookIcon from '@mui/icons-material/MenuBook';
 import HistoryIcon from '@mui/icons-material/History';
 import RadioIcon from '@mui/icons-material/Radio';
+import RestartAltIcon from '@mui/icons-material/RestartAlt';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
+import { miiStore } from '@/lib/mii/store';
 
 const drawerWidth = 248;
 
 const NAV: { href: string; label: string; icon: React.ReactNode }[] = [
   { href: '/', label: 'Dashboard', icon: <DashboardIcon fontSize="small" /> },
-  {
-    href: '/incidents',
-    label: 'Active Incidents',
-    icon: <LocalFireDepartmentIcon fontSize="small" />,
-  },
-  { href: '/units', label: 'Unit Management', icon: <DirectionsCarIcon fontSize="small" /> },
-  {
-    href: '/transcripts',
-    label: 'Radio Transcripts',
-    icon: <RecordVoiceOverIcon fontSize="small" />,
-  },
-  { href: '/codes', label: 'Code Dictionary', icon: <MenuBookIcon fontSize="small" /> },
+  { href: '/incidents', label: 'Incidents', icon: <LocalFireDepartmentIcon fontSize="small" /> },
+  { href: '/transcripts', label: 'Transcripts', icon: <RecordVoiceOverIcon fontSize="small" /> },
+  { href: '/units', label: 'Units', icon: <DirectionsCarIcon fontSize="small" /> },
+  { href: '/codes', label: 'Codes', icon: <MenuBookIcon fontSize="small" /> },
   { href: '/audit', label: 'Audit Log', icon: <HistoryIcon fontSize="small" /> },
 ];
 
@@ -51,22 +47,46 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     return pathname === href || pathname.startsWith(href + '/');
   };
 
+  const handleReset = () => {
+    if (window.confirm('Reset all demo data? This clears incidents, transcripts, and audit log.')) {
+      miiStore.reset();
+    }
+  };
+
   return (
     <Box sx={{ display: 'flex', minHeight: '100vh' }}>
       <AppBar position="fixed" sx={{ zIndex: (t) => t.zIndex.drawer + 1 }}>
         <Toolbar sx={{ gap: 2 }}>
           <RadioIcon color="primary" />
-          <Typography variant="h6" component="div" sx={{ flexGrow: 1 }}>
-            MII Dispatch Sidecar
+          <Typography variant="h6" component="div" sx={{ fontWeight: 700, letterSpacing: 0.5 }}>
+            MII_lite
           </Typography>
           <Chip
             size="small"
-            label="LIVE"
-            color="success"
+            label="LOCAL POC"
+            color="primary"
             variant="outlined"
             sx={{ letterSpacing: 1 }}
           />
-          <Chip size="small" label="Sunny Isles 50" variant="outlined" />
+          <Box sx={{ flexGrow: 1 }} />
+          <Chip
+            size="small"
+            label="SIMULATED DATA ONLY"
+            color="warning"
+            variant="outlined"
+            sx={{ letterSpacing: 0.8, fontWeight: 700 }}
+          />
+          <Tooltip title="Clear all incidents, transcripts, units, and audit events">
+            <Button
+              size="small"
+              color="inherit"
+              variant="outlined"
+              startIcon={<RestartAltIcon />}
+              onClick={handleReset}
+            >
+              Reset Demo Data
+            </Button>
+          </Tooltip>
         </Toolbar>
       </AppBar>
 
@@ -75,20 +95,13 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         sx={{
           width: drawerWidth,
           flexShrink: 0,
-          [`& .MuiDrawer-paper`]: {
-            width: drawerWidth,
-            boxSizing: 'border-box',
-          },
+          [`& .MuiDrawer-paper`]: { width: drawerWidth, boxSizing: 'border-box' },
         }}
       >
         <Toolbar />
         <Box sx={{ px: 2, py: 1.5 }}>
-          <Typography
-            variant="overline"
-            color="text.secondary"
-            sx={{ letterSpacing: 1.2 }}
-          >
-            Dispatcher
+          <Typography variant="overline" color="text.secondary" sx={{ letterSpacing: 1.2 }}>
+            Dispatch Sidecar
           </Typography>
         </Box>
         <Divider sx={{ mx: 2 }} />
@@ -104,29 +117,18 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
                 sx={{
                   borderRadius: 1,
                   mb: 0.5,
-                  '&.Mui-selected': {
-                    backgroundColor: 'rgba(78,161,255,0.12)',
-                  },
-                  '&.Mui-selected:hover': {
-                    backgroundColor: 'rgba(78,161,255,0.18)',
-                  },
+                  '&.Mui-selected': { backgroundColor: 'rgba(78,161,255,0.12)' },
+                  '&.Mui-selected:hover': { backgroundColor: 'rgba(78,161,255,0.18)' },
                 }}
               >
                 <ListItemIcon
-                  sx={{
-                    minWidth: 36,
-                    color: active ? 'primary.main' : 'text.secondary',
-                  }}
+                  sx={{ minWidth: 36, color: active ? 'primary.main' : 'text.secondary' }}
                 >
                   {item.icon}
                 </ListItemIcon>
                 <ListItemText
                   primary={item.label}
-                  slotProps={{
-                    primary: {
-                      sx: { fontSize: 14, fontWeight: active ? 600 : 500 },
-                    },
-                  }}
+                  slotProps={{ primary: { sx: { fontSize: 14, fontWeight: active ? 600 : 500 } } }}
                 />
               </ListItemButton>
             );
@@ -134,23 +136,18 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         </List>
         <Box sx={{ flexGrow: 1 }} />
         <Box sx={{ p: 2 }}>
-          <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
-            Operator: D. Rivera
+          <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+            Tenant: Sunny Isles Beach
           </Typography>
-          <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
-            Shift: 1500–2300
+          <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+            Transcript-first MII POC
           </Typography>
         </Box>
       </Drawer>
 
       <Box
         component="main"
-        sx={{
-          flexGrow: 1,
-          p: 3,
-          width: `calc(100% - ${drawerWidth}px)`,
-          minWidth: 0,
-        }}
+        sx={{ flexGrow: 1, p: 3, width: `calc(100% - ${drawerWidth}px)`, minWidth: 0 }}
       >
         <Toolbar />
         {children}
