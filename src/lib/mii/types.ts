@@ -134,7 +134,14 @@ export type AuditAction =
   | 'ASR_JOB_REQUESTED'
   | 'ASR_JOB_COMPLETED'
   | 'ASR_JOB_FAILED'
-  | 'ASR_JOB_CANCELLED';
+  | 'ASR_JOB_CANCELLED'
+  | 'AUDIO_METADATA_DERIVED'
+  | 'PENNY_PLAN_CREATED'
+  | 'PENNY_ASR_JOB_REQUESTED'
+  | 'PENNY_REVIEW_COMPLETED'
+  | 'PENNY_TRANSCRIPT_READY'
+  | 'PENNY_TRANSCRIPT_NEEDS_REVIEW'
+  | 'PENNY_TRANSCRIPT_ATTACHED';
 
 export interface AuditEvent {
   id: string;
@@ -210,6 +217,22 @@ export type AudioSourceType =
   | 'SYNTHETIC_TTS'
   | 'MANUAL_PLACEHOLDER';
 
+// Display-only waveform + timeline provenance (Phase 2D). Deterministic and
+// local; NOT forensic audio analysis and NOT derived from real audio content.
+export interface AudioWaveformPoint {
+  t: number; // seconds from start
+  amplitude: number; // 0..1 deterministic/display-only
+}
+
+export interface AudioTimelineMarker {
+  id: string;
+  label: string;
+  startSeconds: number;
+  endSeconds?: number;
+  kind: 'ASR_SEGMENT' | 'TRANSCRIPT_LINE' | 'INCIDENT_FIELD' | 'SYSTEM';
+  sourceId?: string;
+}
+
 export interface AudioAsset {
   id: string;
   filename: string;
@@ -221,6 +244,7 @@ export interface AudioAsset {
   createdAt: string;
   notes?: string;
   status: 'UPLOADED' | 'TRANSCRIPT_ATTACHED' | 'PROCESSED';
+  waveform?: AudioWaveformPoint[];
 }
 
 export interface AudioTranscriptAttachment {
@@ -322,4 +346,96 @@ export interface AsrJob {
   freeformTranscriptText?: string;
   error?: string;
   events: AsrJobEvent[];
+}
+
+// --- Phase 2E: P.E.N.N.Y. — Provenance Engine for Normalized Narrative Yield ---
+// PENNY is a deterministic local orchestration layer for transcription workflow,
+// provenance, quality review, and handoff readiness. PENNY never performs real
+// ASR, never creates/mutates incidents, and never writes CAD. It prepares a
+// reviewed transcript package for attachment into the existing MII pipeline.
+
+export type PennyPlanStatus =
+  | 'DRAFT'
+  | 'ASR_JOB_REQUESTED'
+  | 'ASR_JOB_RUNNING'
+  | 'ASR_COMPLETED'
+  | 'REVIEW_READY'
+  | 'READY_FOR_ATTACHMENT'
+  | 'NEEDS_REVIEW'
+  | 'ATTACHED'
+  | 'FAILED'
+  | 'CANCELLED';
+
+export type PennyDecisionType =
+  | 'PROVIDER_SELECTED'
+  | 'ASR_JOB_REQUESTED'
+  | 'ASR_RESULT_EVALUATED'
+  | 'LOW_CONFIDENCE_FLAGGED'
+  | 'NORMALIZED_TRANSCRIPT_PREPARED'
+  | 'READY_FOR_ATTACHMENT'
+  | 'NEEDS_HUMAN_REVIEW'
+  | 'TRANSCRIPT_ATTACHED';
+
+export type TranscriptQualityIssueSeverity = 'INFO' | 'WARNING' | 'BLOCKING';
+
+export type TranscriptQualityIssueKind =
+  | 'LOW_CONFIDENCE_SEGMENT'
+  | 'EMPTY_TRANSCRIPT'
+  | 'MISSING_AUDIO_DURATION'
+  | 'NO_ASR_RESULT'
+  | 'FAILED_ASR_JOB'
+  | 'UNSUPPORTED_PROVIDER'
+  | 'POSSIBLE_ADMIN_CHATTER'
+  | 'SENSITIVE_CONTENT_PRESENT'
+  | 'TRANSCRIPT_READY';
+
+export interface TranscriptQualityIssue {
+  id: string;
+  kind: TranscriptQualityIssueKind;
+  severity: TranscriptQualityIssueSeverity;
+  summary: string;
+  segmentId?: string;
+  confidence?: number;
+  createdAt: string;
+}
+
+export interface PennyDecision {
+  id: string;
+  planId: string;
+  type: PennyDecisionType;
+  summary: string;
+  createdAt: string;
+  sourceId?: string;
+}
+
+export interface PennyTranscriptPackage {
+  id: string;
+  planId: string;
+  audioAssetId: string;
+  asrJobId?: string;
+  asrResultId?: string;
+  normalizedTranscriptText: string;
+  segmentCount: number;
+  averageConfidence?: number;
+  lowestConfidence?: number;
+  qualityIssues: TranscriptQualityIssue[];
+  readyForAttachment: boolean;
+  createdAt: string;
+}
+
+export interface PennyTranscriptionPlan {
+  id: string;
+  audioAssetId: string;
+  provider: AsrProvider;
+  status: PennyPlanStatus;
+  createdAt: string;
+  updatedAt: string;
+  scenarioId?: string;
+  freeformTranscriptText?: string;
+  asrJobId?: string;
+  asrResultId?: string;
+  transcriptPackageId?: string;
+  attachmentId?: string;
+  decisions: PennyDecision[];
+  notes?: string;
 }

@@ -28,16 +28,22 @@ import PageHeader from '@/components/PageHeader';
 import AudioAssetCard, { formatBytes } from '@/components/AudioAssetCard';
 import AsrResultCard from '@/components/AsrResultCard';
 import AsrJobCard from '@/components/AsrJobCard';
+import AudioTimelineCard from '@/components/AudioTimelineCard';
+import PennyPlanCard from '@/components/PennyPlanCard';
 import {
   miiStore,
+  createPlaceholderAudioAssetInput,
   useAudioAssets,
   useAudioTranscriptAttachments,
   useAsrTranscriptResults,
   useAsrJobs,
+  usePennyPlans,
+  usePennyTranscriptPackages,
   useIncidents,
 } from '@/lib/mii/store';
 import { SCENARIOS } from '@/lib/mii/seed';
 import { ASR_PROVIDER_REGISTRY, getAsrProviderDefinition } from '@/lib/mii/asr/providerRegistry';
+import { createDeterministicWaveform } from '@/lib/mii/audioTimeline';
 import type { AsrProvider, AudioSourceType } from '@/lib/mii/types';
 
 const SOURCE_OPTIONS: { value: AudioSourceType; label: string }[] = [
@@ -68,6 +74,8 @@ export default function AudioClient() {
   const attachments = useAudioTranscriptAttachments();
   const asrResults = useAsrTranscriptResults();
   const asrJobs = useAsrJobs();
+  const pennyPlans = usePennyPlans();
+  const pennyPackages = usePennyTranscriptPackages();
   const incidents = useIncidents();
 
   const [sourceType, setSourceType] = React.useState<AudioSourceType>('SIMULATED_UPLOAD');
@@ -75,6 +83,8 @@ export default function AudioClient() {
   const [filePreview, setFilePreview] = React.useState<{ file: File; objectUrl: string } | null>(
     null
   );
+  // Duration read locally from browser audio metadata for the pending file.
+  const [pendingDurationSeconds, setPendingDurationSeconds] = React.useState<number | undefined>();
 
   const [activeAssetId, setActiveAssetId] = React.useState<string | undefined>();
   const [transcriptText, setTranscriptText] = React.useState('');
@@ -87,6 +97,12 @@ export default function AudioClient() {
   const [asrScenarioChoice, setAsrScenarioChoice] = React.useState('medical-3-41');
   const [asrFreeformText, setAsrFreeformText] = React.useState('');
   const [activeJobId, setActiveJobId] = React.useState<string | undefined>();
+
+  // PENNY orchestrator state (Phase 2E).
+  const [pennyProvider, setPennyProvider] = React.useState<AsrProvider>('MOCK_SCENARIO');
+  const [pennyScenarioChoice, setPennyScenarioChoice] = React.useState('medical-3-41');
+  const [pennyFreeformText, setPennyFreeformText] = React.useState('');
+  const [activePennyPlanId, setActivePennyPlanId] = React.useState<string | undefined>();
 
   const [toast, setToast] = React.useState<string | null>(null);
 
@@ -114,6 +130,14 @@ export default function AudioClient() {
       ? asrResults.find((r) => r.id === activeJob.resultId)
       : undefined;
 
+  const pennyProviderDef = getAsrProviderDefinition(pennyProvider);
+  const activePennyPlan = pennyPlans.find((p) => p.id === activePennyPlanId);
+  const activePennyPackage = activePennyPlan?.transcriptPackageId
+    ? pennyPackages.find((p) => p.id === activePennyPlan.transcriptPackageId)
+    : undefined;
+  const pennyPlanTerminalish =
+    activePennyPlan != null && ['ATTACHED', 'CANCELLED'].includes(activePennyPlan.status);
+
   const eventNumberFor = (incidentId?: string) =>
     incidents.find((i) => i.id === incidentId)?.eventNumber;
 
@@ -126,11 +150,29 @@ export default function AudioClient() {
     const objectUrl = URL.createObjectURL(f);
     previewUrlRef.current = objectUrl;
     setFilePreview({ file: f, objectUrl });
+    setPendingDurationSeconds(undefined);
+
+    // Read duration from local browser audio metadata only (no upload, no decode
+    // of content). If unavailable, the flow still works without a duration.
+    try {
+      const probe = new Audio();
+      probe.preload = 'metadata';
+      probe.onloadedmetadata = () => {
+        const d = probe.duration;
+        if (Number.isFinite(d) && d > 0) {
+          setPendingDurationSeconds(Math.round(d * 10) / 10);
+        }
+      };
+      probe.src = objectUrl;
+    } catch {
+      // Metadata probing is best-effort; ignore failures.
+    }
   };
 
   const createAssetFromFile = () => {
     if (!filePreview) return;
     const { file, objectUrl } = filePreview;
+    const durationSeconds = pendingDurationSeconds;
     const asset = miiStore.addAudioAsset({
       filename: file.name,
       sourceType,
@@ -138,6 +180,11 @@ export default function AudioClient() {
       sizeBytes: file.size,
       objectUrl,
       notes: notes.trim() || undefined,
+      durationSeconds,
+      waveform:
+        durationSeconds && durationSeconds > 0
+          ? createDeterministicWaveform(durationSeconds)
+          : undefined,
     });
     setActiveAssetId(asset.id);
     setActiveAttachmentId(undefined);
@@ -145,20 +192,17 @@ export default function AudioClient() {
     // unmount/clear won't revoke the URL the asset card now renders.
     previewUrlRef.current = null;
     setFilePreview(null);
+    setPendingDurationSeconds(undefined);
     setToast(`Audio asset created: ${asset.filename}`);
   };
 
   const createPlaceholder = () => {
-    const asset = miiStore.addAudioAsset({
-      filename: 'simulated-radio-clip.wav',
-      sourceType: 'MANUAL_PLACEHOLDER',
-      mimeType: 'audio/wav',
-      sizeBytes: 0,
-      notes: notes.trim() || 'Placeholder audio artifact for transcript-first processing.',
-    });
+    const asset = miiStore.addAudioAsset(
+      createPlaceholderAudioAssetInput(notes.trim() || undefined)
+    );
     setActiveAssetId(asset.id);
     setActiveAttachmentId(undefined);
-    setToast('Manual placeholder audio asset created.');
+    setToast('Manual placeholder audio asset created (18.0s fixture).');
   };
 
   const useSeededTranscript = () => {
@@ -199,6 +243,62 @@ export default function AudioClient() {
     if (!activeJobId) return;
     const job = miiStore.cancelAsrJob(activeJobId);
     if (job) setToast(`ASR job → ${job.status}.`);
+  };
+
+  // --- PENNY handlers ---
+  const createPennyPlan = () => {
+    if (!activeAssetId) return;
+    const plan = miiStore.createPennyPlan({
+      audioAssetId: activeAssetId,
+      provider: pennyProvider,
+      scenarioId: pennyProviderDef.supportsScenario ? pennyScenarioChoice : undefined,
+      freeformTranscriptText: pennyProviderDef.supportsFreeform ? pennyFreeformText : undefined,
+    });
+    setActivePennyPlanId(plan.id);
+    setToast('PENNY plan created.');
+  };
+
+  const pennyRequestJob = () => {
+    if (!activePennyPlanId) return;
+    const plan = miiStore.pennyRequestAsrJob(activePennyPlanId);
+    if (plan) setToast(`PENNY → ${plan.status.replace(/_/g, ' ')}.`);
+  };
+
+  const pennyAdvance = () => {
+    if (!activePennyPlanId) return;
+    const plan = miiStore.pennyAdvanceAsrJob(activePennyPlanId);
+    if (plan) setToast(`PENNY → ${plan.status.replace(/_/g, ' ')}.`);
+  };
+
+  const pennyRunToCompletion = () => {
+    if (!activePennyPlanId) return;
+    const plan = miiStore.pennyRunAsrToCompletion(activePennyPlanId);
+    if (plan) setToast(`PENNY → ${plan.status.replace(/_/g, ' ')}.`);
+  };
+
+  const pennyEvaluate = () => {
+    if (!activePennyPlanId) return;
+    const pkg = miiStore.evaluateAsrResultForPenny(activePennyPlanId);
+    if (pkg) {
+      setToast(
+        pkg.readyForAttachment
+          ? 'PENNY review complete — transcript ready for attachment.'
+          : 'PENNY review complete — transcript needs human review.'
+      );
+    }
+  };
+
+  const pennyAttach = () => {
+    if (!activePennyPlanId) return;
+    const attachment = miiStore.pennyAttachTranscriptPackage(activePennyPlanId);
+    if (!attachment) {
+      setToast('PENNY could not attach — transcript is not ready.');
+      return;
+    }
+    setActiveAttachmentId(attachment.id);
+    setTranscriptText(attachment.transcriptText);
+    setAttachScenarioId(attachment.scenarioId);
+    setToast('PENNY attached the reviewed transcript — process it in Step 4.');
   };
 
   const attachAsr = (asrResultId: string) => {
@@ -243,9 +343,11 @@ export default function AudioClient() {
     setActiveAssetId(undefined);
     setActiveAttachmentId(undefined);
     setActiveJobId(undefined);
+    setActivePennyPlanId(undefined);
     setTranscriptText('');
     setAttachScenarioId(undefined);
     setFilePreview(null);
+    setPendingDurationSeconds(undefined);
   };
 
   const recentAssets = [...assets].reverse();
@@ -351,6 +453,15 @@ export default function AudioClient() {
                 <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.75, my: 1 }}>
                   <Chip size="small" variant="outlined" label={filePreview.file.type || 'unknown/type'} />
                   <Chip size="small" variant="outlined" label={formatBytes(filePreview.file.size)} />
+                  <Chip
+                    size="small"
+                    variant="outlined"
+                    label={
+                      pendingDurationSeconds != null
+                        ? `Duration: ${pendingDurationSeconds.toFixed(1)}s`
+                        : 'Reading duration…'
+                    }
+                  />
                 </Box>
                 {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
                 <audio controls src={filePreview.objectUrl} style={{ width: '100%' }} />
@@ -389,6 +500,15 @@ export default function AudioClient() {
                 Active audio asset: <b>{activeAsset.filename}</b> ({activeAsset.status.replace(/_/g, ' ')})
               </Alert>
             )}
+
+            {activeAsset && (
+              <AudioTimelineCard
+                asset={activeAsset}
+                asrResult={activeJobResult}
+                attachment={activeAttachment}
+                compact
+              />
+            )}
           </Stack>
         </CardContent>
       </Card>
@@ -405,6 +525,11 @@ export default function AudioClient() {
               content. Mock providers generate ASR-shaped transcript results so the
               request/queue/transcribe/complete flow can be tested safely. No audio is uploaded and
               no external service is contacted.
+            </Typography>
+            <Typography variant="caption" color="text.secondary">
+              Phase 2D adds local audio metadata and timeline provenance. Duration is read locally
+              from browser audio metadata when available, or derived from deterministic mock ASR
+              segments for demo fixtures. No audio is uploaded and no real ASR occurs.
             </Typography>
 
             <Stack direction="row" spacing={1.5} sx={{ flexWrap: 'wrap', gap: 1.5, alignItems: 'center' }}>
@@ -518,6 +643,128 @@ export default function AudioClient() {
                     : 'Attach ASR Transcript to Audio'}
                 </Button>
               </AsrResultCard>
+            )}
+
+            {activeJobResult && (
+              <AudioTimelineCard
+                asset={assets.find((a) => a.id === activeJobResult.audioAssetId)}
+                asrResult={activeJobResult}
+                attachment={activeAttachment}
+              />
+            )}
+          </Stack>
+        </CardContent>
+      </Card>
+
+      {/* P.E.N.N.Y. — Transcription Orchestrator (Phase 2E) */}
+      <Typography variant="overline" color="text.secondary">
+        P.E.N.N.Y. — Transcription Orchestrator
+      </Typography>
+      <Card sx={{ mt: 1, mb: 3, borderColor: 'primary.main', borderWidth: 1, borderStyle: 'solid' }}>
+        <CardContent>
+          <Stack spacing={2}>
+            <Typography variant="body2" color="text.secondary">
+              PENNY coordinates provider selection, ASR job lifecycle, transcript normalization,
+              quality review, and readiness for attachment. PENNY does not perform real ASR, create
+              incidents, or write to CAD.
+            </Typography>
+
+            <Stack direction="row" spacing={1.5} sx={{ flexWrap: 'wrap', gap: 1.5, alignItems: 'center' }}>
+              <TextField
+                select
+                label="ASR provider"
+                value={pennyProvider}
+                onChange={(e) => setPennyProvider(e.target.value as AsrProvider)}
+                size="small"
+                sx={{ minWidth: 240 }}
+              >
+                {ASR_PROVIDER_REGISTRY.map((p) => (
+                  <MenuItem key={p.provider} value={p.provider}>
+                    {p.label}
+                  </MenuItem>
+                ))}
+              </TextField>
+              {pennyProviderDef.supportsScenario && (
+                <TextField
+                  select
+                  label="Scenario"
+                  value={pennyScenarioChoice}
+                  onChange={(e) => setPennyScenarioChoice(e.target.value)}
+                  size="small"
+                  sx={{ minWidth: 220 }}
+                >
+                  {SCENARIO_OPTIONS.map((o) => (
+                    <MenuItem key={o.id} value={o.id}>
+                      {o.label}
+                    </MenuItem>
+                  ))}
+                </TextField>
+              )}
+            </Stack>
+
+            {pennyProviderDef.supportsFreeform && (
+              <TextField
+                label="Freeform transcript input"
+                value={pennyFreeformText}
+                onChange={(e) => setPennyFreeformText(e.target.value)}
+                multiline
+                minRows={3}
+                fullWidth
+                placeholder={'MDSO: You have a 3-41 at 210 174th Street Apartment 123.'}
+              />
+            )}
+
+            <Stack direction="row" spacing={1.5} sx={{ flexWrap: 'wrap', gap: 1.5 }}>
+              <Button
+                variant="contained"
+                onClick={createPennyPlan}
+                disabled={
+                  !activeAssetId || (pennyProviderDef.supportsFreeform && !pennyFreeformText.trim())
+                }
+              >
+                Create PENNY Plan
+              </Button>
+              <Button variant="outlined" onClick={pennyRequestJob} disabled={!activePennyPlan || Boolean(activePennyPlan.asrJobId)}>
+                Request ASR Job
+              </Button>
+              <Button variant="outlined" onClick={pennyAdvance} disabled={!activePennyPlan || pennyPlanTerminalish}>
+                Advance Job
+              </Button>
+              <Button variant="outlined" onClick={pennyRunToCompletion} disabled={!activePennyPlan || pennyPlanTerminalish}>
+                Run Job to Completion
+              </Button>
+              <Button
+                variant="outlined"
+                onClick={pennyEvaluate}
+                disabled={
+                  !activePennyPlan ||
+                  (activePennyPlan.status !== 'ASR_COMPLETED' && activePennyPlan.status !== 'FAILED')
+                }
+              >
+                Evaluate Transcript
+              </Button>
+              <Button
+                variant="contained"
+                color="success"
+                onClick={pennyAttach}
+                disabled={!activePennyPackage?.readyForAttachment || activePennyPlan?.status === 'ATTACHED'}
+              >
+                Attach Ready Transcript
+              </Button>
+            </Stack>
+
+            {!activeAssetId && (
+              <Typography variant="caption" color="text.secondary">
+                Create an audio asset in Step 2 first.
+              </Typography>
+            )}
+
+            {activePennyPlan && (
+              <PennyPlanCard
+                plan={activePennyPlan}
+                pkg={activePennyPackage}
+                filename={assets.find((a) => a.id === activePennyPlan.audioAssetId)?.filename}
+              />
             )}
           </Stack>
         </CardContent>

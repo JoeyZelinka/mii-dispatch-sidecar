@@ -10,6 +10,8 @@ import type {
   AuditEvent,
   IncidentContext,
   MockCadPayload,
+  PennyTranscriptPackage,
+  PennyTranscriptionPlan,
   ReplayState,
   TranscriptLine,
   Unit,
@@ -43,6 +45,14 @@ import {
   startScenarioReplay as engineStartReplay,
   submitMockCad as engineSubmitMockCad,
 } from './processor';
+import {
+  createPennyPlan as engineCreatePennyPlan,
+  evaluateAsrResultForPenny as engineEvaluatePenny,
+  pennyAdvanceAsrJob as enginePennyAdvance,
+  pennyAttachTranscriptPackage as enginePennyAttach,
+  pennyRequestAsrJob as enginePennyRequest,
+  pennyRunAsrToCompletion as enginePennyRunToCompletion,
+} from './penny';
 
 const STORAGE_KEY = 'mii_lite_state_v1';
 const REVIEWER = 'Dispatcher (you)';
@@ -60,6 +70,8 @@ function freshState(): MiiState {
     audioTranscriptAttachments: [],
     asrTranscriptResults: [],
     asrJobs: [],
+    pennyPlans: [],
+    pennyTranscriptPackages: [],
   };
 }
 
@@ -82,6 +94,9 @@ function loadState(): MiiState {
     if (!Array.isArray(parsed.asrTranscriptResults)) parsed.asrTranscriptResults = [];
     // Forward-compat: older persisted state predates the ASR jobs slice.
     if (!Array.isArray(parsed.asrJobs)) parsed.asrJobs = [];
+    // Forward-compat: older persisted state predates the PENNY slices.
+    if (!Array.isArray(parsed.pennyPlans)) parsed.pennyPlans = [];
+    if (!Array.isArray(parsed.pennyTranscriptPackages)) parsed.pennyTranscriptPackages = [];
     return parsed;
   } catch {
     return freshState();
@@ -216,6 +231,32 @@ export const miiStore = {
   cancelAsrJob(jobId: string): AsrJob | undefined {
     return update((d) => engineCancelAsrJob(d, jobId, REVIEWER));
   },
+
+  // --- Phase 2E PENNY orchestration actions ---
+  createPennyPlan(input: {
+    audioAssetId: string;
+    provider: AsrProvider;
+    scenarioId?: string;
+    freeformTranscriptText?: string;
+    notes?: string;
+  }): PennyTranscriptionPlan {
+    return update((d) => engineCreatePennyPlan(d, { ...input, actor: REVIEWER }));
+  },
+  pennyRequestAsrJob(planId: string): PennyTranscriptionPlan | undefined {
+    return update((d) => enginePennyRequest(d, planId, REVIEWER));
+  },
+  pennyAdvanceAsrJob(planId: string): PennyTranscriptionPlan | undefined {
+    return update((d) => enginePennyAdvance(d, planId, REVIEWER));
+  },
+  pennyRunAsrToCompletion(planId: string): PennyTranscriptionPlan | undefined {
+    return update((d) => enginePennyRunToCompletion(d, planId, REVIEWER));
+  },
+  evaluateAsrResultForPenny(planId: string): PennyTranscriptPackage | undefined {
+    return update((d) => engineEvaluatePenny(d, planId, REVIEWER));
+  },
+  pennyAttachTranscriptPackage(planId: string): AudioTranscriptAttachment | undefined {
+    return update((d) => enginePennyAttach(d, planId, REVIEWER));
+  },
   clearAudioIntake() {
     update((d) => engineClearAudioIntake(d));
   },
@@ -274,3 +315,12 @@ export function useAsrTranscriptResults(): AsrTranscriptResult[] {
 export function useAsrJobs(): AsrJob[] {
   return useStore((s) => s.asrJobs);
 }
+export function usePennyPlans(): PennyTranscriptionPlan[] {
+  return useStore((s) => s.pennyPlans);
+}
+export function usePennyTranscriptPackages(): PennyTranscriptPackage[] {
+  return useStore((s) => s.pennyTranscriptPackages);
+}
+
+// Re-export the pure placeholder builder so client components use one source.
+export { createPlaceholderAudioAssetInput } from './processor';

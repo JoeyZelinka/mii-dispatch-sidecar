@@ -22,6 +22,7 @@ import {
   clearAudioIntake,
   confirmAsr,
   confirmSensitiveField,
+  createPlaceholderAudioAssetInput,
   processAudioTranscriptAttachment,
   processScenarioReplayNext,
   requestAsrJob,
@@ -35,7 +36,20 @@ import {
 import { SEED_UNITS } from '@/lib/mii/seed';
 import { buildMockCadPayload } from '@/lib/mii/mockCad';
 import { submitBlockReasons, canSubmitMockCad, hasUnconfirmedSensitive } from '@/lib/mii/safetyGates';
-import type { IncidentContext } from '@/lib/mii/types';
+import {
+  createDeterministicWaveform,
+  estimateDurationFromSegments,
+  fieldProvenanceToTimelineMarkers,
+  segmentsToTimelineMarkers,
+} from '@/lib/mii/audioTimeline';
+import {
+  createPennyPlan,
+  evaluateAsrResultForPenny,
+  pennyAttachTranscriptPackage,
+  pennyRequestAsrJob,
+  pennyRunAsrToCompletion,
+} from '@/lib/mii/penny';
+import type { AsrTranscriptResult, IncidentContext } from '@/lib/mii/types';
 
 // Mirror the store's freshState() exactly (freshState is store-internal).
 function fresh(): MiiState {
@@ -51,7 +65,18 @@ function fresh(): MiiState {
     audioTranscriptAttachments: [],
     asrTranscriptResults: [],
     asrJobs: [],
+    pennyPlans: [],
+    pennyTranscriptPackages: [],
   };
+}
+
+// A completed mock Medical ASR result for helper-level checks.
+function medicalAsrResult() {
+  const s = fresh();
+  const assetId = newAudio(s, 'medical.wav');
+  const job = requestAsrJob(s, assetId, { provider: 'MOCK_SCENARIO', scenarioId: 'medical-3-41', actor: ACTOR });
+  const final = runAsrJobToCompletion(s, job.id, ACTOR)!;
+  return s.asrTranscriptResults.find((r) => r.id === final.resultId)!;
 }
 
 const ACTOR = 'verify-mii';
@@ -610,6 +635,243 @@ check('ASR job cancel', () => {
   // Advancing a cancelled job leaves it cancelled.
   advanceAsrJob(s, job.id, ACTOR);
   eq(s.asrJobs.find((x) => x.id === job.id)!.status, 'CANCELLED', 'still CANCELLED after advance');
+});
+
+// =========================================================================
+// Phase 2D — local audio metadata + timeline provenance
+// =========================================================================
+
+check('createDeterministicWaveform is deterministic', () => {
+  const a = createDeterministicWaveform(18);
+  const b = createDeterministicWaveform(18);
+  ok(a.length > 0, 'non-empty');
+  eq(JSON.stringify(a), JSON.stringify(b), 'identical across calls');
+  ok(a.every((p) => p.amplitude >= 0 && p.amplitude <= 1), 'amplitudes within 0..1');
+  eq(createDeterministicWaveform(0).length, 0, 'zero duration → empty');
+});
+
+check('estimateDurationFromSegments matches max segment end', () => {
+  const result = medicalAsrResult();
+  const dur = estimateDurationFromSegments(result.segments)!;
+  ok(dur > 0, 'duration > 0');
+  const maxEnd = Math.max(...result.segments.map((s) => (s.endMs ?? 0) / 1000));
+  ok(Math.abs(dur - maxEnd) < 0.2, `duration ~= max segment end (dur ${dur}, maxEnd ${maxEnd})`);
+});
+
+check('segmentsToTimelineMarkers maps segments', () => {
+  const result = medicalAsrResult();
+  const markers = segmentsToTimelineMarkers(result.segments);
+  eq(markers.length, result.segments.length, 'marker count equals segment count');
+  eq(markers[0].kind, 'ASR_SEGMENT', 'first marker kind ASR_SEGMENT');
+  ok(!!markers[0].label, 'marker has label');
+  ok(!!markers[0].sourceId, 'marker has sourceId');
+});
+
+check('placeholder audio gets duration and waveform', () => {
+  const s = fresh();
+  const input = createPlaceholderAudioAssetInput();
+  const asset = addAudioAsset(s, input);
+  ok(asset.durationSeconds != null && asset.durationSeconds > 0, `durationSeconds set (got ${asset.durationSeconds})`);
+  ok(!!asset.waveform && asset.waveform.length > 0, 'waveform non-empty');
+});
+
+check('ASR completion backfills duration/waveform', () => {
+  const s = fresh();
+  // Audio asset with no duration/waveform.
+  const asset = addAudioAsset(s, {
+    filename: 'medical.wav',
+    sourceType: 'SIMULATED_UPLOAD',
+    mimeType: 'audio/wav',
+    sizeBytes: 100,
+  });
+  ok(asset.durationSeconds == null, 'starts with no duration');
+  ok(asset.waveform == null, 'starts with no waveform');
+  const job = requestAsrJob(s, asset.id, { provider: 'MOCK_SCENARIO', scenarioId: 'medical-3-41', actor: ACTOR });
+  runAsrJobToCompletion(s, job.id, ACTOR);
+  const updated = s.audioAssets.find((a) => a.id === asset.id)!;
+  ok(updated.durationSeconds != null && updated.durationSeconds > 0, `duration backfilled (got ${updated.durationSeconds})`);
+  ok(!!updated.waveform && updated.waveform.length > 0, 'waveform backfilled');
+  ok(s.audit.some((a) => a.action === 'AUDIO_METADATA_DERIVED'), 'audit has AUDIO_METADATA_DERIVED');
+});
+
+check('ASR-attached incident has timeline provenance', () => {
+  const s = fresh();
+  const assetId = newAudio(s, 'medical.wav');
+  const job = requestAsrJob(s, assetId, { provider: 'MOCK_SCENARIO', scenarioId: 'medical-3-41', actor: ACTOR });
+  const final = runAsrJobToCompletion(s, job.id, ACTOR)!;
+  const result = s.asrTranscriptResults.find((r) => r.id === final.resultId)!;
+  const att = attachAsrResultToAudio(s, final.resultId!, ACTOR)!;
+  const { incidentId } = processAudioTranscriptAttachment(s, att.id, ACTOR);
+  const inc = s.incidents.find((i) => i.id === incidentId)!;
+  const asrMarkers = segmentsToTimelineMarkers(result.segments);
+  const fieldMarkers = fieldProvenanceToTimelineMarkers(inc);
+  ok(asrMarkers.length > 0, 'ASR markers exist');
+  ok(fieldMarkers.length > 0, 'field markers exist');
+  ok(fieldMarkers.every((m) => m.kind === 'INCIDENT_FIELD'), 'field markers kind INCIDENT_FIELD');
+});
+
+// =========================================================================
+// Phase 2E — P.E.N.N.Y. transcription orchestrator
+// =========================================================================
+
+function placeholderAudio(s: MiiState): string {
+  return addAudioAsset(s, createPlaceholderAudioAssetInput()).id;
+}
+
+check('PENNY creates transcription plan', () => {
+  const s = fresh();
+  const assetId = placeholderAudio(s);
+  const plan = createPennyPlan(s, { audioAssetId: assetId, provider: 'MOCK_SCENARIO', scenarioId: 'medical-3-41', actor: ACTOR });
+  eq(plan.status, 'DRAFT', 'status DRAFT');
+  eq(plan.provider, 'MOCK_SCENARIO', 'provider');
+  ok(plan.decisions.some((d) => d.type === 'PROVIDER_SELECTED'), 'decision PROVIDER_SELECTED');
+  ok(s.audit.some((a) => a.action === 'PENNY_PLAN_CREATED'), 'audit PENNY_PLAN_CREATED');
+});
+
+check('PENNY requests ASR job', () => {
+  const s = fresh();
+  const assetId = placeholderAudio(s);
+  const plan = createPennyPlan(s, { audioAssetId: assetId, provider: 'MOCK_SCENARIO', scenarioId: 'medical-3-41', actor: ACTOR });
+  pennyRequestAsrJob(s, plan.id, ACTOR);
+  const p = s.pennyPlans.find((x) => x.id === plan.id)!;
+  eq(p.status, 'ASR_JOB_REQUESTED', 'status ASR_JOB_REQUESTED');
+  ok(!!p.asrJobId, 'asrJobId set');
+  ok(s.audit.some((a) => a.action === 'PENNY_ASR_JOB_REQUESTED'), 'audit PENNY_ASR_JOB_REQUESTED');
+});
+
+check('PENNY runs ASR to completion', () => {
+  const s = fresh();
+  const assetId = placeholderAudio(s);
+  const plan = createPennyPlan(s, { audioAssetId: assetId, provider: 'MOCK_SCENARIO', scenarioId: 'medical-3-41', actor: ACTOR });
+  pennyRunAsrToCompletion(s, plan.id, ACTOR);
+  const p = s.pennyPlans.find((x) => x.id === plan.id)!;
+  eq(p.status, 'ASR_COMPLETED', 'status ASR_COMPLETED');
+  ok(!!p.asrResultId, 'asrResultId set');
+  const result = s.asrTranscriptResults.find((r) => r.id === p.asrResultId)!;
+  eq(result.status, 'COMPLETED', 'result COMPLETED');
+});
+
+check('PENNY evaluates Medical transcript as ready', () => {
+  const s = fresh();
+  const assetId = placeholderAudio(s);
+  const plan = createPennyPlan(s, { audioAssetId: assetId, provider: 'MOCK_SCENARIO', scenarioId: 'medical-3-41', actor: ACTOR });
+  pennyRunAsrToCompletion(s, plan.id, ACTOR);
+  const pkg = evaluateAsrResultForPenny(s, plan.id, ACTOR)!;
+  ok(!!pkg, 'package exists');
+  ok(pkg.readyForAttachment, 'readyForAttachment true');
+  ok(pkg.normalizedTranscriptText.includes('3-41'), 'normalized text includes 3-41');
+  ok((pkg.averageConfidence ?? 0) > 0.8, `avg confidence > 0.8 (got ${pkg.averageConfidence})`);
+  ok(!pkg.qualityIssues.some((i) => i.severity === 'BLOCKING'), 'no BLOCKING issues');
+  const p = s.pennyPlans.find((x) => x.id === plan.id)!;
+  eq(p.status, 'READY_FOR_ATTACHMENT', 'plan status READY_FOR_ATTACHMENT');
+  ok(s.audit.some((a) => a.action === 'PENNY_TRANSCRIPT_READY'), 'audit PENNY_TRANSCRIPT_READY');
+});
+
+check('PENNY attaches ready transcript but does not process incident', () => {
+  const s = fresh();
+  const assetId = placeholderAudio(s);
+  const plan = createPennyPlan(s, { audioAssetId: assetId, provider: 'MOCK_SCENARIO', scenarioId: 'medical-3-41', actor: ACTOR });
+  pennyRunAsrToCompletion(s, plan.id, ACTOR);
+  evaluateAsrResultForPenny(s, plan.id, ACTOR);
+  const att = pennyAttachTranscriptPackage(s, plan.id, ACTOR)!;
+  ok(!!att, 'attachment exists');
+  const p = s.pennyPlans.find((x) => x.id === plan.id)!;
+  eq(p.status, 'ATTACHED', 'plan status ATTACHED');
+  eq(s.incidents.length, 0, 'no incident created by PENNY');
+  // Human step processes the attachment.
+  const { incidentId } = processAudioTranscriptAttachment(s, att.id, ACTOR);
+  const inc = s.incidents.find((i) => i.id === incidentId)!;
+  eq(inc.natureCode, '3-41', 'natureCode');
+  eq(inc.address, '210 174th Street', 'address');
+  ok(assignedNames(s, inc).some((n) => n.includes('421')), 'Sunny Isles 421 assigned');
+});
+
+check('PENNY Address Conflict path → CONFLICT', () => {
+  const s = fresh();
+  const assetId = placeholderAudio(s);
+  const plan = createPennyPlan(s, { audioAssetId: assetId, provider: 'MOCK_SCENARIO', scenarioId: 'conflict-address', actor: ACTOR });
+  pennyRunAsrToCompletion(s, plan.id, ACTOR);
+  evaluateAsrResultForPenny(s, plan.id, ACTOR);
+  const att = pennyAttachTranscriptPackage(s, plan.id, ACTOR)!;
+  const { incidentId } = processAudioTranscriptAttachment(s, att.id, ACTOR);
+  const inc = s.incidents.find((i) => i.id === incidentId)!;
+  eq(inc.status, 'CONFLICT', 'status CONFLICT');
+});
+
+check('PENNY Admin Chatter path → no incident + admin flag', () => {
+  const s = fresh();
+  const assetId = placeholderAudio(s);
+  const plan = createPennyPlan(s, { audioAssetId: assetId, provider: 'MOCK_SCENARIO', scenarioId: 'admin-chatter', actor: ACTOR });
+  pennyRunAsrToCompletion(s, plan.id, ACTOR);
+  const pkg = evaluateAsrResultForPenny(s, plan.id, ACTOR)!;
+  ok(pkg.qualityIssues.some((i) => i.kind === 'POSSIBLE_ADMIN_CHATTER'), 'has POSSIBLE_ADMIN_CHATTER info');
+  const att = pennyAttachTranscriptPackage(s, plan.id, ACTOR)!;
+  const { incidentId } = processAudioTranscriptAttachment(s, att.id, ACTOR);
+  eq(incidentId, undefined, 'no incident id');
+  eq(s.incidents.length, 0, 'incident count');
+});
+
+check('PENNY Freeform path → Medical 3-41', () => {
+  const s = fresh();
+  const assetId = placeholderAudio(s);
+  const text = [
+    'MDSO: Sunny Isles fifty.',
+    'MDSO: You have a 3-41 at 210 174th Street Apartment 123, reference a 50 year old male with chest pains.',
+    'SIBPD: QSL assign Sunny Isles 421 the signal.',
+  ].join('\n');
+  const plan = createPennyPlan(s, { audioAssetId: assetId, provider: 'MOCK_FREEFORM', freeformTranscriptText: text, actor: ACTOR });
+  pennyRunAsrToCompletion(s, plan.id, ACTOR);
+  const pkg = evaluateAsrResultForPenny(s, plan.id, ACTOR)!;
+  ok(pkg.readyForAttachment, 'ready');
+  const att = pennyAttachTranscriptPackage(s, plan.id, ACTOR)!;
+  const { incidentId } = processAudioTranscriptAttachment(s, att.id, ACTOR);
+  const inc = s.incidents.find((i) => i.id === incidentId);
+  ok(!!inc, 'incident created');
+  eq(inc!.natureCode, '3-41', 'natureCode');
+});
+
+check('PENNY failed provider needs review', () => {
+  const s = fresh();
+  const assetId = placeholderAudio(s);
+  const plan = createPennyPlan(s, { audioAssetId: assetId, provider: 'LOCAL_PLACEHOLDER', actor: ACTOR });
+  pennyRunAsrToCompletion(s, plan.id, ACTOR);
+  const pkg = evaluateAsrResultForPenny(s, plan.id, ACTOR)!;
+  ok(!pkg.readyForAttachment, 'not ready');
+  ok(pkg.qualityIssues.some((i) => i.severity === 'BLOCKING'), 'has BLOCKING issue');
+  const p = s.pennyPlans.find((x) => x.id === plan.id)!;
+  ok(p.status === 'NEEDS_REVIEW' || p.status === 'FAILED', `status NEEDS_REVIEW/FAILED (got ${p.status})`);
+  ok(s.audit.some((a) => a.action === 'PENNY_TRANSCRIPT_NEEDS_REVIEW'), 'audit PENNY_TRANSCRIPT_NEEDS_REVIEW');
+  // Attach must be refused for a not-ready package.
+  eq(pennyAttachTranscriptPackage(s, plan.id, ACTOR), undefined, 'attach refused when not ready');
+});
+
+check('PENNY low-confidence blocking threshold', () => {
+  const s = fresh();
+  const assetId = placeholderAudio(s);
+  const plan = createPennyPlan(s, { audioAssetId: assetId, provider: 'MOCK_SCENARIO', scenarioId: 'medical-3-41', actor: ACTOR });
+  // Inject a result with a segment below the blocking confidence threshold.
+  const result: AsrTranscriptResult = {
+    id: 'asr_lowconf_test',
+    audioAssetId: assetId,
+    provider: 'MOCK_SCENARIO',
+    status: 'COMPLETED',
+    transcriptText: 'MDSO: You have a 3-41 at 210 174th Street.',
+    segments: [
+      { id: 'seg_a', speaker: 'MDSO', text: 'You have a 3-41 at 210 174th Street.', startMs: 0, endMs: 1800, confidence: 0.4 },
+    ],
+    createdAt: '2026-01-01T00:00:00.000Z',
+    completedAt: '2026-01-01T00:00:00.000Z',
+    scenarioId: 'medical-3-41',
+  };
+  s.asrTranscriptResults.push(result);
+  plan.asrResultId = result.id;
+  plan.status = 'ASR_COMPLETED';
+  const pkg = evaluateAsrResultForPenny(s, plan.id, ACTOR)!;
+  ok(
+    pkg.qualityIssues.some((i) => i.kind === 'LOW_CONFIDENCE_SEGMENT' && i.severity === 'BLOCKING'),
+    'BLOCKING LOW_CONFIDENCE_SEGMENT present'
+  );
+  ok(!pkg.readyForAttachment, 'not ready');
 });
 
 // =========================================================================

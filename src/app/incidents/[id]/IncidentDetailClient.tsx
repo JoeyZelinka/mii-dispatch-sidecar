@@ -16,6 +16,8 @@ import {
   useAudioTranscriptAttachments,
   useAsrTranscriptResults,
   useAsrJobs,
+  usePennyPlans,
+  usePennyTranscriptPackages,
 } from '@/lib/mii/store';
 import { IncidentStatusChip, ConfidenceChip } from '@/components/StatusChip';
 import IncidentContextBundleCard from '@/components/IncidentContextBundleCard';
@@ -41,6 +43,8 @@ export default function IncidentDetailClient({ id }: { id: string }) {
   const audioAttachments = useAudioTranscriptAttachments();
   const asrResults = useAsrTranscriptResults();
   const asrJobs = useAsrJobs();
+  const pennyPlans = usePennyPlans();
+  const pennyPackages = usePennyTranscriptPackages();
   const [toast, setToast] = React.useState<string | null>(null);
 
   if (!incident) {
@@ -113,6 +117,9 @@ export default function IncidentDetailClient({ id }: { id: string }) {
               assets={audioAssets}
               asrResults={asrResults}
               asrJobs={asrJobs}
+              pennyPlans={pennyPlans}
+              pennyPackages={pennyPackages}
+              incident={incident}
             />
           )}
           <TranscriptTimeline lines={incidentLines} />

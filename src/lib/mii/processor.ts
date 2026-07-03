@@ -5,6 +5,7 @@ import type {
   AudioAsset,
   AudioSourceType,
   AudioTranscriptAttachment,
+  AudioWaveformPoint,
   CueEvent,
   IncidentContext,
   MockCadPayload,
@@ -16,6 +17,7 @@ import type {
 } from './types';
 import { mockAsrAdapter } from './asr/mockAsrAdapter';
 import { getAsrProviderDefinition } from './asr/providerRegistry';
+import { createDeterministicWaveform, estimateDurationFromSegments } from './audioTimeline';
 import { AGENCY, TENANT, getScenario } from './seed';
 import { detectCues } from './cueDetector';
 import { extractFields } from './extractor';
@@ -47,6 +49,8 @@ export interface MiiState {
   audioTranscriptAttachments: AudioTranscriptAttachment[];
   asrTranscriptResults: AsrTranscriptResult[];
   asrJobs: AsrJob[];
+  pennyPlans: import('./types').PennyTranscriptionPlan[];
+  pennyTranscriptPackages: import('./types').PennyTranscriptPackage[];
 }
 
 const SYSTEM_ACTOR = 'MII_lite engine';
@@ -799,6 +803,7 @@ export interface AddAudioAssetInput {
   durationSeconds?: number;
   objectUrl?: string;
   notes?: string;
+  waveform?: AudioWaveformPoint[];
 }
 
 export function addAudioAsset(draft: MiiState, input: AddAudioAssetInput): AudioAsset {
@@ -813,9 +818,26 @@ export function addAudioAsset(draft: MiiState, input: AddAudioAssetInput): Audio
     notes: input.notes,
     createdAt: nowIso(),
     status: 'UPLOADED',
+    waveform: input.waveform,
   };
   draft.audioAssets.push(asset);
   return asset;
+}
+
+// Deterministic placeholder input (Phase 2D). Shared by the /audio UI and the
+// verification harness so both agree on fixture duration + waveform.
+const PLACEHOLDER_DURATION_SECONDS = 18;
+
+export function createPlaceholderAudioAssetInput(notes?: string): AddAudioAssetInput {
+  return {
+    filename: 'simulated-radio-clip.wav',
+    sourceType: 'MANUAL_PLACEHOLDER',
+    mimeType: 'audio/wav',
+    sizeBytes: 0,
+    durationSeconds: PLACEHOLDER_DURATION_SECONDS,
+    waveform: createDeterministicWaveform(PLACEHOLDER_DURATION_SECONDS),
+    notes: notes ?? 'Placeholder audio artifact for transcript-first processing.',
+  };
 }
 
 export function attachTranscriptToAudio(
@@ -950,6 +972,47 @@ export function clearAudioIntake(draft: MiiState): void {
   draft.audioTranscriptAttachments = [];
   draft.asrTranscriptResults = [];
   draft.asrJobs = [];
+  draft.pennyPlans = [];
+  draft.pennyTranscriptPackages = [];
+}
+
+// --- Phase 2D: derive display-only audio metadata ------------------------
+// Backfill deterministic duration + waveform from an ASR result. Never touches
+// objectUrl or file data; audits only when it actually derives something.
+function backfillAudioMetadataFromResult(
+  draft: MiiState,
+  asset: AudioAsset | undefined,
+  result: AsrTranscriptResult,
+  actor: string
+): void {
+  if (!asset) return;
+  let derivedDuration = false;
+  let derivedWaveform = false;
+
+  if (asset.durationSeconds == null) {
+    const est = estimateDurationFromSegments(result.segments);
+    if (est != null) {
+      asset.durationSeconds = est;
+      derivedDuration = true;
+    }
+  }
+  if (asset.durationSeconds != null && (!asset.waveform || asset.waveform.length === 0)) {
+    asset.waveform = createDeterministicWaveform(asset.durationSeconds);
+    derivedWaveform = true;
+  }
+
+  if (derivedDuration || derivedWaveform) {
+    const waveform: AudioWaveformPoint[] = asset.waveform ?? [];
+    audit(draft, {
+      correlationId: newCorrelationId(),
+      action: 'AUDIO_METADATA_DERIVED',
+      actor,
+      summary: derivedDuration
+        ? `Audio duration and waveform metadata derived from ASR segments for ${asset.filename}.`
+        : `Audio waveform metadata generated for ${asset.filename}.`,
+      after: { durationSeconds: asset.durationSeconds, waveformPoints: waveform.length },
+    });
+  }
 }
 
 // --- Phase 2B: mock ASR adapter shell ------------------------------------
@@ -994,6 +1057,7 @@ export function runMockAsrForAudio(
 
   const correlationId = newCorrelationId();
   if (result.status === 'COMPLETED') {
+    backfillAudioMetadataFromResult(draft, asset, result, actor);
     const via =
       result.provider === 'MOCK_SCENARIO' && result.scenarioId
         ? `${getScenario(result.scenarioId)?.title ?? result.scenarioId}`
@@ -1207,6 +1271,7 @@ export function advanceAsrJob(
     job.resultId = result.id;
 
     if (result.status === 'COMPLETED') {
+      backfillAudioMetadataFromResult(draft, asset, result, actor);
       job.status = 'COMPLETED';
       job.completedAt = nowIso();
       pushJobEvent(job, 'COMPLETED', 'COMPLETE', 'ASR job completed and transcript result stored.');

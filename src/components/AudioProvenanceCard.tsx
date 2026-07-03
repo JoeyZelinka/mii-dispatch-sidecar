@@ -8,9 +8,15 @@ import type {
   AudioAsset,
   AudioTranscriptAttachment,
 } from '@/lib/mii/types';
+import type {
+  IncidentContext,
+  PennyTranscriptPackage,
+  PennyTranscriptionPlan,
+} from '@/lib/mii/types';
 import { formatDateTime } from '@/lib/format';
 import { formatBytes } from './AudioAssetCard';
 import { averageConfidence } from './AsrResultCard';
+import AudioTimelineCard from './AudioTimelineCard';
 import { getAsrProviderDefinition } from '@/lib/mii/asr/providerRegistry';
 
 const SOURCE_LABEL: Record<AudioAsset['sourceType'], string> = {
@@ -43,11 +49,17 @@ export default function AudioProvenanceCard({
   assets,
   asrResults = [],
   asrJobs = [],
+  pennyPlans = [],
+  pennyPackages = [],
+  incident,
 }: {
   attachments: AudioTranscriptAttachment[];
   assets: AudioAsset[];
   asrResults?: AsrTranscriptResult[];
   asrJobs?: AsrJob[];
+  pennyPlans?: PennyTranscriptionPlan[];
+  pennyPackages?: PennyTranscriptPackage[];
+  incident?: IncidentContext;
 }) {
   if (attachments.length === 0) return null;
 
@@ -68,6 +80,11 @@ export default function AudioProvenanceCard({
           const asset = assets.find((a) => a.id === att.audioAssetId);
           const asr = resolveAsrResult(att, asrResults);
           const job = asr ? asrJobs.find((j) => j.resultId === asr.id) : undefined;
+          const pennyPlan = pennyPlans.find((p) => p.attachmentId === att.id);
+          const pennyPkg = pennyPlan?.transcriptPackageId
+            ? pennyPackages.find((p) => p.id === pennyPlan.transcriptPackageId)
+            : undefined;
+          const latestDecision = pennyPlan?.decisions[pennyPlan.decisions.length - 1];
           return (
             <Box key={att.id}>
               {idx > 0 && <Divider sx={{ my: 1.5 }} />}
@@ -171,6 +188,52 @@ export default function AudioProvenanceCard({
                 </Box>
               )}
 
+              {pennyPlan && (
+                <Box
+                  sx={{
+                    mt: 1,
+                    p: 1,
+                    borderRadius: 1,
+                    border: '1px solid rgba(78,161,255,0.3)',
+                    background: 'rgba(78,161,255,0.06)',
+                  }}
+                >
+                  <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.75, mb: 0.5 }}>
+                    <Chip size="small" color="primary" variant="outlined" label="P.E.N.N.Y. Review" />
+                    <Chip size="small" color="primary" variant="outlined" label={pennyPlan.status.replace(/_/g, ' ')} />
+                    {pennyPkg && (
+                      <Chip
+                        size="small"
+                        color={pennyPkg.readyForAttachment ? 'success' : 'warning'}
+                        variant="outlined"
+                        label={pennyPkg.readyForAttachment ? 'ready' : 'needs review'}
+                      />
+                    )}
+                    {pennyPkg && (
+                      <Chip size="small" variant="outlined" label={`${pennyPkg.segmentCount} segments`} />
+                    )}
+                    {pennyPkg?.averageConfidence != null && (
+                      <Chip size="small" variant="outlined" label={`avg ${Math.round(pennyPkg.averageConfidence * 100)}%`} />
+                    )}
+                    {pennyPkg?.lowestConfidence != null && (
+                      <Chip size="small" variant="outlined" label={`min ${Math.round(pennyPkg.lowestConfidence * 100)}%`} />
+                    )}
+                    {pennyPkg && (
+                      <Chip size="small" variant="outlined" label={`${pennyPkg.qualityIssues.length} quality notes`} />
+                    )}
+                  </Box>
+                  {latestDecision && (
+                    <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+                      Latest decision: {latestDecision.summary}
+                    </Typography>
+                  )}
+                  <Typography variant="caption" color="text.secondary">
+                    PENNY coordinated transcription readiness only. The existing MII pipeline created
+                    the incident context from the attached transcript.
+                  </Typography>
+                </Box>
+              )}
+
               {asset?.objectUrl && (
                 <Box sx={{ mt: 1 }}>
                   {/* Session-local blob preview only; never uploaded. */}
@@ -183,6 +246,19 @@ export default function AudioProvenanceCard({
                 Audio preview is session-local and may not survive refresh. Transcript and audit
                 provenance remain available.
               </Typography>
+
+              <Box sx={{ mt: 1.5 }}>
+                <AudioTimelineCard
+                  asset={asset}
+                  asrResult={asr}
+                  attachment={att}
+                  incident={incident}
+                />
+                <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.5 }}>
+                  This timeline shows demo provenance from local audio metadata, ASR-shaped segments,
+                  and transcript-derived incident fields. No real ASR or external service was used.
+                </Typography>
+              </Box>
             </Box>
           );
         })}

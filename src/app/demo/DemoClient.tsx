@@ -110,8 +110,8 @@ export default function DemoClient() {
         <Link href="/audio" style={{ color: 'inherit' }}>
           Audio Intake
         </Link>{' '}
-        now includes a mock ASR adapter shell. It creates ASR-shaped transcript results from seeded
-        or manual text; real ASR is not enabled yet.
+        now includes PENNY, a deterministic transcription orchestrator that prepares ASR-shaped
+        transcripts for review and attachment. Real ASR is not enabled.
       </Typography>
 
       <Alert severity="info" sx={{ mb: 3 }}>

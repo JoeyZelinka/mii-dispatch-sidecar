@@ -25,6 +25,13 @@ const actionColor: Partial<Record<AuditAction, 'default' | 'primary' | 'success'
   ASR_JOB_COMPLETED: 'success',
   ASR_JOB_FAILED: 'error',
   ASR_JOB_CANCELLED: 'warning',
+  AUDIO_METADATA_DERIVED: 'default',
+  PENNY_PLAN_CREATED: 'primary',
+  PENNY_ASR_JOB_REQUESTED: 'info',
+  PENNY_REVIEW_COMPLETED: 'secondary',
+  PENNY_TRANSCRIPT_READY: 'success',
+  PENNY_TRANSCRIPT_NEEDS_REVIEW: 'warning',
+  PENNY_TRANSCRIPT_ATTACHED: 'secondary',
 };
 
 export default function AuditTimeline({
