@@ -43,6 +43,12 @@ import {
 } from '@/lib/mii/safetyGates';
 import { evaluateTranscriptReviewGateForIncident } from '@/lib/mii/transcriptReviewGate';
 import {
+  defaultDemoPolicy,
+  evaluateSignOffPolicyGateForIncident,
+  updateDemoPolicy,
+} from '@/lib/mii/signOffPolicy';
+import { buildIncidentAuditExport } from '@/lib/mii/auditExport';
+import {
   createDeterministicWaveform,
   estimateDurationFromSegments,
   fieldProvenanceToTimelineMarkers,
@@ -78,6 +84,7 @@ function fresh(): MiiState {
     pennyPlans: [],
     pennyTranscriptPackages: [],
     pennyReviewStates: [],
+    demoPolicy: defaultDemoPolicy(),
   };
 }
 
@@ -1195,6 +1202,110 @@ check('Transcript review snapshot survives conflict path', () => {
   const gate = evaluateTranscriptReviewGateForIncident(s, incidentId!);
   const readiness = evaluateIncidentSafetyReadiness(inc, gate);
   ok(!readiness.canSubmit, 'conflict still blocks submit');
+});
+
+// =========================================================================
+// Phase 2I — configurable sign-off policy + local audit export
+// =========================================================================
+
+// Run a clean PENNY flow WITHOUT sign-off, attach (2E fallback), and process.
+function runPennyUnsignedFlow(scenarioId: string): { s: MiiState; incidentId?: string } {
+  const s = fresh();
+  const assetId = placeholderAudio(s);
+  const plan = createPennyPlan(s, { audioAssetId: assetId, provider: 'MOCK_SCENARIO', scenarioId, actor: ACTOR });
+  pennyRunAsrToCompletion(s, plan.id, ACTOR);
+  evaluateAsrResultForPenny(s, plan.id, ACTOR);
+  const att = pennyAttachTranscriptPackage(s, plan.id, ACTOR)!;
+  const { incidentId } = processAudioTranscriptAttachment(s, att.id, ACTOR);
+  return { s, incidentId };
+}
+
+check('Default demo policy requires PENNY sign-off', () => {
+  const s = fresh();
+  eq(s.demoPolicy.signOffPolicyMode, 'REQUIRED_FOR_PENNY', 'default policy mode');
+});
+
+check('Sign-off policy gate NOT_APPLICABLE for direct scenario', () => {
+  const { s, incident } = runInstant('medical-3-41');
+  const gate = evaluateSignOffPolicyGateForIncident(s, incident!.id);
+  eq(gate.status, 'NOT_APPLICABLE', 'status NOT_APPLICABLE');
+});
+
+check('Sign-off policy gate BLOCKED for unsigned PENNY incident', () => {
+  const { s, incidentId } = runPennyUnsignedFlow('medical-3-41');
+  const gate = evaluateSignOffPolicyGateForIncident(s, incidentId!);
+  eq(gate.status, 'BLOCKED', 'status BLOCKED');
+  const inc = s.incidents.find((i) => i.id === incidentId)!;
+  const trg = evaluateTranscriptReviewGateForIncident(s, incidentId!);
+  const readiness = evaluateIncidentSafetyReadiness(inc, trg, gate);
+  ok(!readiness.canSubmit, 'canSubmit false');
+  ok(readiness.blockingReasons.includes('Transcript sign-off is required by policy'), 'policy block reason present');
+});
+
+check('Sign-off policy gate PASS for signed PENNY incident', () => {
+  const { s, incidentId } = runPennySignedFlow('medical-3-41');
+  const gate = evaluateSignOffPolicyGateForIncident(s, incidentId!);
+  eq(gate.status, 'PASS', 'status PASS');
+  ok(!!gate.signedOffBy, 'signedOffBy present');
+  const inc = s.incidents.find((i) => i.id === incidentId)!;
+  const trg = evaluateTranscriptReviewGateForIncident(s, incidentId!);
+  const readiness = evaluateIncidentSafetyReadiness(inc, trg, gate);
+  ok(!readiness.blockingReasons.includes('Transcript sign-off is required by policy'), 'policy does not block');
+});
+
+check('ADVISORY policy warns but does not block', () => {
+  const { s, incidentId } = runPennyUnsignedFlow('medical-3-41');
+  updateDemoPolicy(s, 'ADVISORY', ACTOR);
+  const gate = evaluateSignOffPolicyGateForIncident(s, incidentId!);
+  eq(gate.status, 'ADVISORY', 'status ADVISORY');
+  const inc = s.incidents.find((i) => i.id === incidentId)!;
+  const trg = evaluateTranscriptReviewGateForIncident(s, incidentId!);
+  const readiness = evaluateIncidentSafetyReadiness(inc, trg, gate);
+  ok(readiness.warnings.includes('Transcript sign-off is advisory and not yet complete'), 'advisory warning present');
+  ok(!readiness.blockingReasons.includes('Transcript sign-off is required by policy'), 'advisory does not block');
+});
+
+check('REQUIRED_FOR_ALL_AUDIO blocks unsigned manual audio incident', () => {
+  const s = fresh();
+  updateDemoPolicy(s, 'REQUIRED_FOR_ALL_AUDIO', ACTOR);
+  const asset = addAudioAsset(s, createPlaceholderAudioAssetInput());
+  const att = attachTranscriptToAudio(s, asset.id, '', 'medical-3-41');
+  const { incidentId } = processAudioTranscriptAttachment(s, att.id, ACTOR);
+  const gate = evaluateSignOffPolicyGateForIncident(s, incidentId!);
+  eq(gate.status, 'BLOCKED', 'manual audio incident BLOCKED');
+  // A direct non-audio scenario stays NOT_APPLICABLE under the same policy.
+  const { incidentId: directId } = runScenario(s, 'traffic-19', ACTOR);
+  const directGate = evaluateSignOffPolicyGateForIncident(s, directId!);
+  eq(directGate.status, 'NOT_APPLICABLE', 'direct scenario NOT_APPLICABLE');
+});
+
+check('Policy update is audited', () => {
+  const s = fresh();
+  updateDemoPolicy(s, 'ADVISORY', ACTOR);
+  ok(s.audit.some((a) => a.action === 'DEMO_POLICY_UPDATED'), 'audit DEMO_POLICY_UPDATED');
+});
+
+check('Incident audit export contains transcript/signoff provenance', () => {
+  const { s, incidentId } = runPennySignedFlow('medical-3-41');
+  const exp = buildIncidentAuditExport(s, incidentId!);
+  eq(exp.exportVersion, 'MII_LITE_AUDIT_EXPORT_V1', 'exportVersion');
+  eq(exp.incident.id, incidentId, 'incident id');
+  eq(exp.transcriptReviewGate.status, 'PASS', 'transcriptReviewGate PASS');
+  eq(exp.signOffPolicyGate.status, 'PASS', 'signOffPolicyGate PASS');
+  ok(exp.pennyPlans.length > 0, 'pennyPlans present');
+  ok(exp.pennyReviews.length > 0, 'pennyReviews present');
+  ok(exp.audioAttachments.length > 0, 'audioAttachments present');
+  ok(exp.auditEvents.some((a) => a.action === 'PENNY_REVIEW_SIGNED_OFF'), 'audit has PENNY_REVIEW_SIGNED_OFF');
+  ok(exp.auditEvents.some((a) => a.action === 'INCIDENT_TRANSCRIPT_REVIEW_SNAPSHOT'), 'audit has INCIDENT_TRANSCRIPT_REVIEW_SNAPSHOT');
+  ok(!!exp.safetyReadiness, 'safetyReadiness present');
+});
+
+check('Incident audit export for direct scenario is N/A-safe', () => {
+  const { s, incident } = runInstant('medical-3-41');
+  const exp = buildIncidentAuditExport(s, incident!.id);
+  eq(exp.transcriptReviewGate.status, 'NOT_APPLICABLE', 'transcriptReviewGate NOT_APPLICABLE');
+  eq(exp.signOffPolicyGate.status, 'NOT_APPLICABLE', 'signOffPolicyGate NOT_APPLICABLE');
+  ok(exp.auditEvents.length > 0, 'auditEvents present');
 });
 
 // =========================================================================

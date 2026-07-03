@@ -32,6 +32,7 @@ import SafetyGatesCard from '@/components/SafetyGatesCard';
 import ConflictResolutionCard from '@/components/ConflictResolutionCard';
 import AudioProvenanceCard from '@/components/AudioProvenanceCard';
 import IncidentTranscriptReviewCard from '@/components/IncidentTranscriptReviewCard';
+import IncidentAuditExportButton from '@/components/IncidentAuditExportButton';
 import { hasUnconfirmedSensitive, evaluateIncidentSafetyReadiness } from '@/lib/mii/safetyGates';
 
 export default function IncidentDetailClient({ id }: { id: string }) {
@@ -68,9 +69,14 @@ export default function IncidentDetailClient({ id }: { id: string }) {
   const incidentAudit = audit.filter((e) => e.incidentId === id);
   const linkedAudio = audioAttachments.filter((a) => a.activeIncidentId === id);
   const unconfirmedSensitive = hasUnconfirmedSensitive(incident);
-  // Phase 2G — fold the transcript review gate into Incident Report readiness.
+  // Phase 2G/2I — fold the transcript review + sign-off policy gates into readiness.
   const transcriptReviewGate = miiStore.transcriptReviewGate(id);
-  const readiness = evaluateIncidentSafetyReadiness(incident, transcriptReviewGate);
+  const signOffPolicyGate = miiStore.signOffPolicyGate(id);
+  const readiness = evaluateIncidentSafetyReadiness(
+    incident,
+    transcriptReviewGate,
+    signOffPolicyGate
+  );
   const blockReasons = readiness.blockingReasons;
 
   const handleSubmitCad = () => {
@@ -136,6 +142,7 @@ export default function IncidentDetailClient({ id }: { id: string }) {
           )}
           <TranscriptTimeline lines={incidentLines} />
           <AuditTimeline events={incidentAudit} title="Incident Audit Timeline" />
+          <IncidentAuditExportButton incidentId={id} />
         </Box>
 
         {/* Right column */}
@@ -151,6 +158,7 @@ export default function IncidentDetailClient({ id }: { id: string }) {
             units={units}
             payload={payload}
             transcriptReviewGate={transcriptReviewGate}
+            signOffPolicyGate={signOffPolicyGate}
           />
           <HumanReviewActions
             incident={incident}

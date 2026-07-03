@@ -31,6 +31,7 @@ import AsrJobCard from '@/components/AsrJobCard';
 import AudioTimelineCard from '@/components/AudioTimelineCard';
 import PennyPlanCard from '@/components/PennyPlanCard';
 import PennyReviewCard from '@/components/PennyReviewCard';
+import DemoPolicyCard from '@/components/DemoPolicyCard';
 import {
   miiStore,
   createPlaceholderAudioAssetInput,
@@ -41,6 +42,7 @@ import {
   usePennyPlans,
   usePennyTranscriptPackages,
   usePennyReviewStates,
+  useDemoPolicy,
   useIncidents,
 } from '@/lib/mii/store';
 import { SCENARIOS } from '@/lib/mii/seed';
@@ -79,6 +81,7 @@ export default function AudioClient() {
   const pennyPlans = usePennyPlans();
   const pennyPackages = usePennyTranscriptPackages();
   const pennyReviewStates = usePennyReviewStates();
+  const demoPolicy = useDemoPolicy();
   const incidents = useIncidents();
 
   const [sourceType, setSourceType] = React.useState<AudioSourceType>('SIMULATED_UPLOAD');
@@ -722,6 +725,14 @@ export default function AudioClient() {
           </Stack>
         </CardContent>
       </Card>
+
+      {/* Demo Policy (Phase 2I) */}
+      <Typography variant="overline" color="text.secondary">
+        Demo Policy
+      </Typography>
+      <Box sx={{ mt: 1, mb: 3 }}>
+        <DemoPolicyCard policy={demoPolicy} onChangeMode={(mode) => miiStore.updateDemoPolicy(mode)} />
+      </Box>
 
       {/* P.E.N.N.Y. — Transcription Orchestrator (Phase 2E) */}
       <Typography variant="overline" color="text.secondary">

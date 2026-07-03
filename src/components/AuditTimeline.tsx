@@ -42,6 +42,7 @@ const actionColor: Partial<Record<AuditAction, 'default' | 'primary' | 'success'
   INCIDENT_TRANSCRIPT_REVIEW_LINKED: 'secondary',
   INCIDENT_TRANSCRIPT_REVIEW_SNAPSHOT: 'info',
   INCIDENT_TRANSCRIPT_SIGNOFF_RECORDED: 'success',
+  DEMO_POLICY_UPDATED: 'primary',
 };
 
 export default function AuditTimeline({

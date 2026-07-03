@@ -15,6 +15,7 @@ import type {
   PennyTranscriptPackage,
   PennyTranscriptionPlan,
   ReplayState,
+  SignOffPolicyGateResult,
   TranscriptReviewGateResult,
   TranscriptLine,
   Unit,
@@ -63,6 +64,12 @@ import {
   signOffPennyReview as engineSignOffReview,
 } from './penny';
 import { evaluateTranscriptReviewGateForIncident as engineTranscriptReviewGate } from './transcriptReviewGate';
+import {
+  defaultDemoPolicy,
+  evaluateSignOffPolicyGateForIncident as engineSignOffPolicyGate,
+  updateDemoPolicy as engineUpdateDemoPolicy,
+} from './signOffPolicy';
+import { buildIncidentAuditExport, type IncidentAuditExport } from './auditExport';
 
 const STORAGE_KEY = 'mii_lite_state_v1';
 const REVIEWER = 'Dispatcher (you)';
@@ -83,6 +90,7 @@ function freshState(): MiiState {
     pennyPlans: [],
     pennyTranscriptPackages: [],
     pennyReviewStates: [],
+    demoPolicy: defaultDemoPolicy(),
   };
 }
 
@@ -109,6 +117,10 @@ function loadState(): MiiState {
     if (!Array.isArray(parsed.pennyPlans)) parsed.pennyPlans = [];
     if (!Array.isArray(parsed.pennyTranscriptPackages)) parsed.pennyTranscriptPackages = [];
     if (!Array.isArray(parsed.pennyReviewStates)) parsed.pennyReviewStates = [];
+    // Forward-compat: older persisted state predates the demo policy.
+    if (!parsed.demoPolicy || !parsed.demoPolicy.signOffPolicyMode) {
+      parsed.demoPolicy = defaultDemoPolicy();
+    }
     return parsed;
   } catch {
     return freshState();
@@ -301,6 +313,17 @@ export const miiStore = {
   transcriptReviewGate(incidentId: string): TranscriptReviewGateResult {
     return engineTranscriptReviewGate(state, incidentId);
   },
+  // Read-only sign-off policy gate for an incident.
+  signOffPolicyGate(incidentId: string): SignOffPolicyGateResult {
+    return engineSignOffPolicyGate(state, incidentId);
+  },
+  updateDemoPolicy(mode: import('./types').SignOffPolicyMode) {
+    return update((d) => engineUpdateDemoPolicy(d, mode, REVIEWER));
+  },
+  // Read-only local audit export builder for an incident.
+  buildAuditExport(incidentId: string): IncidentAuditExport {
+    return buildIncidentAuditExport(state, incidentId);
+  },
   clearAudioIntake() {
     update((d) => engineClearAudioIntake(d));
   },
@@ -367,6 +390,9 @@ export function usePennyTranscriptPackages(): PennyTranscriptPackage[] {
 }
 export function usePennyReviewStates(): PennyReviewState[] {
   return useStore((s) => s.pennyReviewStates);
+}
+export function useDemoPolicy(): import('./types').MiiDemoPolicy {
+  return useStore((s) => s.demoPolicy);
 }
 
 // Re-export the pure placeholder builder so client components use one source.

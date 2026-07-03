@@ -54,6 +54,7 @@ export interface MiiState {
   pennyPlans: import('./types').PennyTranscriptionPlan[];
   pennyTranscriptPackages: import('./types').PennyTranscriptPackage[];
   pennyReviewStates: import('./types').PennyReviewState[];
+  demoPolicy: import('./types').MiiDemoPolicy;
 }
 
 const SYSTEM_ACTOR = 'MII_lite engine';

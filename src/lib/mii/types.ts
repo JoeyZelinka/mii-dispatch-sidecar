@@ -153,7 +153,8 @@ export type AuditAction =
   | 'PENNY_REVIEW_SIGNED_OFF'
   | 'INCIDENT_TRANSCRIPT_REVIEW_LINKED'
   | 'INCIDENT_TRANSCRIPT_REVIEW_SNAPSHOT'
-  | 'INCIDENT_TRANSCRIPT_SIGNOFF_RECORDED';
+  | 'INCIDENT_TRANSCRIPT_SIGNOFF_RECORDED'
+  | 'DEMO_POLICY_UPDATED';
 
 export interface AuditEvent {
   id: string;
@@ -546,4 +547,35 @@ export interface IncidentTranscriptReviewSnapshot {
   unresolvedWarningCount: number;
   unresolvedBlockingCount: number;
   capturedAt: string;
+}
+
+// --- Phase 2I: configurable sign-off policy ---
+// A local, tenant/demo-level governance setting controlling whether transcript
+// reviewer sign-off is required before Mock CAD submission. Local only.
+
+export type SignOffPolicyMode =
+  | 'NOT_REQUIRED'
+  | 'ADVISORY'
+  | 'REQUIRED_FOR_PENNY'
+  | 'REQUIRED_FOR_ALL_AUDIO';
+
+export interface MiiDemoPolicy {
+  id: string;
+  name: string;
+  signOffPolicyMode: SignOffPolicyMode;
+  updatedAt: string;
+}
+
+export type SignOffPolicyGateStatus = 'NOT_APPLICABLE' | 'PASS' | 'ADVISORY' | 'BLOCKED';
+
+export interface SignOffPolicyGateResult {
+  status: SignOffPolicyGateStatus;
+  label: string;
+  summary: string;
+  policyMode: SignOffPolicyMode;
+  appliesToIncident: boolean;
+  required: boolean;
+  signedOff: boolean;
+  signedOffBy?: string;
+  signedOffAt?: string;
 }

@@ -1,4 +1,9 @@
-import type { IncidentContext, SuggestedField, TranscriptReviewGateResult } from './types';
+import type {
+  IncidentContext,
+  SignOffPolicyGateResult,
+  SuggestedField,
+  TranscriptReviewGateResult,
+} from './types';
 
 // Deterministic, explainable human-in-the-loop safety model. This is the single
 // source of truth shared by SafetyGatesCard and the Submit Mock CAD gating, so
@@ -194,10 +199,12 @@ export function canSubmitMockCad(incident: IncidentContext): boolean {
 // block (consistent with the non-blocking sensitive-field policy).
 export function evaluateIncidentSafetyReadiness(
   incident: IncidentContext,
-  transcriptReviewGate?: TranscriptReviewGateResult
+  transcriptReviewGate?: TranscriptReviewGateResult,
+  signOffPolicyGate?: SignOffPolicyGateResult
 ): {
   gates: SafetyGate[];
   transcriptReviewGate?: TranscriptReviewGateResult;
+  signOffPolicyGate?: SignOffPolicyGateResult;
   blockingReasons: string[];
   warnings: string[];
   canSubmit: boolean;
@@ -214,9 +221,18 @@ export function evaluateIncidentSafetyReadiness(
     }
   }
 
+  if (signOffPolicyGate) {
+    if (signOffPolicyGate.status === 'BLOCKED') {
+      blockingReasons.push('Transcript sign-off is required by policy');
+    } else if (signOffPolicyGate.status === 'ADVISORY') {
+      warnings.push('Transcript sign-off is advisory and not yet complete');
+    }
+  }
+
   return {
     gates,
     transcriptReviewGate,
+    signOffPolicyGate,
     blockingReasons,
     warnings,
     canSubmit: blockingReasons.length === 0,

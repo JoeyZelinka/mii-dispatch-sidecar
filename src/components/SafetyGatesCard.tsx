@@ -9,6 +9,8 @@ import ShieldIcon from '@mui/icons-material/Shield';
 import type {
   IncidentContext,
   MockCadPayload,
+  SignOffPolicyGateResult,
+  SignOffPolicyGateStatus,
   TranscriptReviewGateResult,
   TranscriptReviewGateStatus,
   Unit,
@@ -124,15 +126,31 @@ const transcriptGateVisual: Record<
   },
 };
 
+const policyGateVisual: Record<
+  SignOffPolicyGateStatus,
+  { color: 'success' | 'warning' | 'error' | 'default'; icon: React.ReactNode; label: string }
+> = {
+  PASS: { color: 'success', icon: <CheckCircleIcon fontSize="small" />, label: 'PASS' },
+  ADVISORY: { color: 'warning', icon: <WarningAmberIcon fontSize="small" />, label: 'ADVISORY' },
+  BLOCKED: { color: 'error', icon: <BlockIcon fontSize="small" />, label: 'BLOCKED' },
+  NOT_APPLICABLE: {
+    color: 'default',
+    icon: <RadioButtonUncheckedIcon fontSize="small" />,
+    label: 'N/A',
+  },
+};
+
 export default function SafetyGatesCard({
   incident,
   payload,
   transcriptReviewGate,
+  signOffPolicyGate,
 }: {
   incident: IncidentContext;
   units?: Unit[];
   payload?: MockCadPayload;
   transcriptReviewGate?: TranscriptReviewGateResult;
+  signOffPolicyGate?: SignOffPolicyGateResult;
 }) {
   const gates = evaluateGates(incident);
   const checklist = buildChecklist(incident, payload);
@@ -220,6 +238,52 @@ export default function SafetyGatesCard({
                   <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.25, fontStyle: 'italic' }}>
                     Transcript review affects readiness visibility; MII incident extraction still
                     comes from the attached transcript.
+                  </Typography>
+                </Box>
+              );
+            })()}
+          </>
+        )}
+
+        {signOffPolicyGate && (
+          <>
+            <Divider sx={{ my: 1 }} />
+            {(() => {
+              const pv = policyGateVisual[signOffPolicyGate.status];
+              return (
+                <Box>
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
+                    <Chip size="small" color={pv.color} icon={pv.icon as React.ReactElement} label={pv.label} />
+                    <Typography variant="subtitle2" sx={{ flexGrow: 1 }}>
+                      Sign-Off Policy
+                    </Typography>
+                    <Chip
+                      size="small"
+                      variant="outlined"
+                      color={signOffPolicyGate.status === 'BLOCKED' ? undefined : 'info'}
+                      label={signOffPolicyGate.status === 'BLOCKED' ? 'Blocking' : 'Advisory'}
+                    />
+                  </Box>
+                  <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.25 }}>
+                    {signOffPolicyGate.summary}
+                  </Typography>
+                  <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5, mt: 0.5 }}>
+                    <Chip size="small" variant="outlined" label={`mode: ${signOffPolicyGate.policyMode}`} />
+                    <Chip size="small" variant="outlined" label={`required: ${signOffPolicyGate.required ? 'yes' : 'no'}`} />
+                    <Chip size="small" variant="outlined" label={`applies: ${signOffPolicyGate.appliesToIncident ? 'yes' : 'no'}`} />
+                    <Chip size="small" variant="outlined" label={`signed off: ${signOffPolicyGate.signedOff ? 'yes' : 'no'}`} />
+                  </Box>
+                  {signOffPolicyGate.signedOffBy && (
+                    <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.25 }}>
+                      Reviewer: {signOffPolicyGate.signedOffBy}
+                      {signOffPolicyGate.signedOffAt
+                        ? ` · ${formatDateTime(signOffPolicyGate.signedOffAt)}`
+                        : ''}
+                    </Typography>
+                  )}
+                  <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.25, fontStyle: 'italic' }}>
+                    Sign-off policy controls Mock CAD readiness for the demo. It does not change
+                    transcript extraction.
                   </Typography>
                 </Box>
               );
