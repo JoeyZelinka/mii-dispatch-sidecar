@@ -37,6 +37,7 @@ export default function PennyReviewCard({
   onOverrideIssue,
   onAddNote,
   onEvaluateReadiness,
+  onSignOff,
 }: {
   plan: PennyTranscriptionPlan;
   pkg: PennyTranscriptPackage;
@@ -46,6 +47,7 @@ export default function PennyReviewCard({
   onOverrideIssue?: (issueId: string, note: string) => void;
   onAddNote?: (note: string) => void;
   onEvaluateReadiness?: () => void;
+  onSignOff?: () => void;
 }) {
   const [overrideNotes, setOverrideNotes] = React.useState<Record<string, string>>({});
   const [note, setNote] = React.useState('');
@@ -173,11 +175,27 @@ export default function PennyReviewCard({
           <Button size="small" variant="contained" onClick={() => onEvaluateReadiness?.()}>
             Evaluate Review Readiness
           </Button>
+          <Button
+            size="small"
+            variant="contained"
+            color="success"
+            disabled={gate.status !== 'PASS' || Boolean(reviewState?.signedOffBy)}
+            onClick={() => onSignOff?.()}
+          >
+            {reviewState?.signedOffBy ? 'Signed Off' : 'Sign Off Review'}
+          </Button>
         </Box>
 
+        {reviewState?.signedOffBy && (
+          <Typography variant="caption" color="success.main" sx={{ display: 'block', mt: 0.5 }}>
+            Signed off by {reviewState.signedOffBy}
+            {reviewState.signedOffAt ? ` · ${new Date(reviewState.signedOffAt).toLocaleString()}` : ''}
+          </Typography>
+        )}
+
         <Alert severity="info" icon={false} sx={{ mt: 1, py: 0.25 }}>
-          Human review affects transcript attachment readiness only. It does not create incidents or
-          write CAD.
+          Sign-off records reviewer accountability. It does not process the transcript. Human review
+          affects transcript attachment readiness only; it does not create incidents or write CAD.
         </Alert>
       </CardContent>
     </Card>

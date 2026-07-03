@@ -13,6 +13,7 @@ export default function HumanReviewActions({
   blockReasons,
   hasUnconfirmedSensitive,
   warnings = [],
+  transcriptSignedOffBy,
   onConfirmAsr,
   onApplyFields,
   onSubmitCad,
@@ -22,6 +23,7 @@ export default function HumanReviewActions({
   blockReasons: string[];
   hasUnconfirmedSensitive: boolean;
   warnings?: string[];
+  transcriptSignedOffBy?: string;
   onConfirmAsr: () => void;
   onApplyFields: () => void;
   onSubmitCad: () => void;
@@ -98,6 +100,14 @@ export default function HumanReviewActions({
             <Typography variant="body2">
               All blocking safety gates pass. Submitting builds a <b>mock</b> CAD payload only — it is
               never sent to any external system.
+            </Typography>
+          </Alert>
+        )}
+
+        {transcriptSignedOffBy && (
+          <Alert severity="success" sx={{ mt: 2 }} variant="outlined">
+            <Typography variant="body2">
+              Transcript review signed off by <b>{transcriptSignedOffBy}</b>.
             </Typography>
           </Alert>
         )}

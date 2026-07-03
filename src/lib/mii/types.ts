@@ -93,6 +93,8 @@ export interface IncidentContext {
   createdAt: string;
   updatedAt: string;
   asrConfirmed: boolean;
+  // Phase 2H: point-in-time transcript review snapshot (audit/provenance only).
+  transcriptReviewSnapshot?: IncidentTranscriptReviewSnapshot;
 }
 
 export interface Unit {
@@ -147,7 +149,11 @@ export type AuditAction =
   | 'PENNY_REVIEW_OVERRIDE_RECORDED'
   | 'PENNY_REVIEW_NOTE_ADDED'
   | 'PENNY_PACKAGE_MARKED_READY'
-  | 'PENNY_RETRANSCRIPTION_REQUESTED';
+  | 'PENNY_RETRANSCRIPTION_REQUESTED'
+  | 'PENNY_REVIEW_SIGNED_OFF'
+  | 'INCIDENT_TRANSCRIPT_REVIEW_LINKED'
+  | 'INCIDENT_TRANSCRIPT_REVIEW_SNAPSHOT'
+  | 'INCIDENT_TRANSCRIPT_SIGNOFF_RECORDED';
 
 export interface AuditEvent {
   id: string;
@@ -459,7 +465,8 @@ export type PennyReviewActionType =
   | 'REQUEST_RETRANSCRIPTION'
   | 'MARK_REVIEW_READY'
   | 'MARK_READY_FOR_ATTACHMENT'
-  | 'ADD_REVIEW_NOTE';
+  | 'ADD_REVIEW_NOTE'
+  | 'SIGN_OFF_REVIEW';
 
 export interface PennyReviewAction {
   id: string;
@@ -518,4 +525,25 @@ export interface TranscriptReviewGateResult {
   unresolvedBlockingCount: number;
   latestReviewer?: string;
   latestReviewAt?: string;
+}
+
+// --- Phase 2H: incident audit linkage + reviewer sign-off ---
+// A point-in-time snapshot of the transcript review state captured onto the
+// incident when it was created/updated from a PENNY-reviewed attachment. Used
+// for audit/provenance; live gate evaluation remains the source of truth for
+// current readiness.
+
+export interface IncidentTranscriptReviewSnapshot {
+  status: TranscriptReviewGateStatus;
+  planId?: string;
+  packageId?: string;
+  reviewStateId?: string;
+  signedOffBy?: string;
+  signedOffAt?: string;
+  summary: string;
+  blockingCount: number;
+  warningCount: number;
+  unresolvedWarningCount: number;
+  unresolvedBlockingCount: number;
+  capturedAt: string;
 }

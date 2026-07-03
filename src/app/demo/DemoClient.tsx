@@ -110,8 +110,8 @@ export default function DemoClient() {
         <Link href="/audio" style={{ color: 'inherit' }}>
           Audio Intake
         </Link>{' '}
-        now includes PENNY human review and a transcript review gate in Incident Safety Gates. Real
-        ASR is not enabled.
+        now includes PENNY human review, reviewer sign-off, and transcript review gate provenance.
+        Real ASR is not enabled.
       </Typography>
 
       <Alert severity="info" sx={{ mb: 3 }}>

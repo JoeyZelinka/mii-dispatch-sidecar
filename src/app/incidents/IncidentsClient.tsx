@@ -11,6 +11,7 @@ import {
   TableBody,
   Typography,
   Button,
+  Chip,
   Link as MuiLink,
 } from '@mui/material';
 import Link from 'next/link';
@@ -18,6 +19,17 @@ import { useIncidents, useUnits } from '@/lib/mii/store';
 import PageHeader from '@/components/PageHeader';
 import { IncidentStatusChip, ZoneChip, ConfidenceChip } from '@/components/StatusChip';
 import { formatRelative } from '@/lib/format';
+import type { TranscriptReviewGateStatus } from '@/lib/mii/types';
+
+const REVIEW_CHIP_COLOR: Record<
+  TranscriptReviewGateStatus,
+  'success' | 'warning' | 'error' | 'default'
+> = {
+  PASS: 'success',
+  WARNING: 'warning',
+  BLOCKED: 'error',
+  NOT_APPLICABLE: 'default',
+};
 
 export default function IncidentsClient() {
   const incidents = useIncidents();
@@ -53,6 +65,7 @@ export default function IncidentsClient() {
                   <TableCell>Zone</TableCell>
                   <TableCell>Units</TableCell>
                   <TableCell>Confidence</TableCell>
+                  <TableCell>Transcript Review</TableCell>
                   <TableCell>Updated</TableCell>
                 </TableRow>
               </TableHead>
@@ -84,6 +97,19 @@ export default function IncidentsClient() {
                       <TableCell>{unitNames || '—'}</TableCell>
                       <TableCell>
                         <ConfidenceChip value={inc.confidence} />
+                      </TableCell>
+                      <TableCell>
+                        {(() => {
+                          const st = inc.transcriptReviewSnapshot?.status;
+                          return (
+                            <Chip
+                              size="small"
+                              variant="outlined"
+                              color={st ? REVIEW_CHIP_COLOR[st] : 'default'}
+                              label={st ? st.replace(/_/g, ' ') : 'N/A'}
+                            />
+                          );
+                        })()}
                       </TableCell>
                       <TableCell>
                         <Typography variant="caption" color="text.secondary">

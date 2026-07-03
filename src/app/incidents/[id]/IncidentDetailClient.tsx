@@ -31,6 +31,7 @@ import MockCadPayloadCard from '@/components/MockCadPayloadCard';
 import SafetyGatesCard from '@/components/SafetyGatesCard';
 import ConflictResolutionCard from '@/components/ConflictResolutionCard';
 import AudioProvenanceCard from '@/components/AudioProvenanceCard';
+import IncidentTranscriptReviewCard from '@/components/IncidentTranscriptReviewCard';
 import { hasUnconfirmedSensitive, evaluateIncidentSafetyReadiness } from '@/lib/mii/safetyGates';
 
 export default function IncidentDetailClient({ id }: { id: string }) {
@@ -129,6 +130,10 @@ export default function IncidentDetailClient({ id }: { id: string }) {
               incident={incident}
             />
           )}
+          {(incident.transcriptReviewSnapshot ||
+            transcriptReviewGate.status !== 'NOT_APPLICABLE') && (
+            <IncidentTranscriptReviewCard incident={incident} liveGate={transcriptReviewGate} />
+          )}
           <TranscriptTimeline lines={incidentLines} />
           <AuditTimeline events={incidentAudit} title="Incident Audit Timeline" />
         </Box>
@@ -152,6 +157,7 @@ export default function IncidentDetailClient({ id }: { id: string }) {
             blockReasons={blockReasons}
             hasUnconfirmedSensitive={unconfirmedSensitive}
             warnings={readiness.warnings}
+            transcriptSignedOffBy={incident.transcriptReviewSnapshot?.signedOffBy}
             onConfirmAsr={() => miiStore.confirmAsr(id)}
             onApplyFields={() => miiStore.applySuggestedFields(id)}
             onSubmitCad={handleSubmitCad}

@@ -358,6 +358,16 @@ export default function AudioClient() {
     }
   };
 
+  const pennySignOff = () => {
+    if (!activePennyPlan || !activePennyPackage) return;
+    try {
+      const rs = miiStore.signOffPennyReview(activePennyPlan.id, activePennyPackage.id);
+      if (rs?.signedOffBy) setToast(`Review signed off by ${rs.signedOffBy}.`);
+    } catch (e) {
+      setToast((e as Error).message);
+    }
+  };
+
   const attachAsr = (asrResultId: string) => {
     const attachment = miiStore.attachAsrResultToAudio(asrResultId);
     if (!attachment) return;
@@ -808,7 +818,8 @@ export default function AudioClient() {
                   activePennyPlan?.status === 'ATTACHED' ||
                   (activePennyGate
                     ? activePennyGate.status !== 'PASS'
-                    : !activePennyPackage?.readyForAttachment)
+                    : !activePennyPackage?.readyForAttachment) ||
+                  Boolean(activePennyReviewState && !activePennyReviewState.signedOffBy)
                 }
               >
                 Attach Ready Transcript
@@ -826,6 +837,15 @@ export default function AudioClient() {
                 Resolve PENNY review items below, then Evaluate Review Readiness before attaching.
               </Typography>
             )}
+
+            {activePennyGate?.status === 'PASS' &&
+              activePennyReviewState &&
+              !activePennyReviewState.signedOffBy &&
+              activePennyPlan?.status !== 'ATTACHED' && (
+                <Typography variant="caption" color="text.secondary">
+                  Sign off the review below before attaching the transcript.
+                </Typography>
+              )}
 
             {activePennyPlan && (
               <PennyPlanCard
@@ -850,6 +870,7 @@ export default function AudioClient() {
                 onOverrideIssue={pennyOverride}
                 onAddNote={pennyAddNote}
                 onEvaluateReadiness={pennyEvaluateReadiness}
+                onSignOff={pennySignOff}
               />
             )}
           </Stack>

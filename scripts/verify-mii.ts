@@ -57,6 +57,7 @@ import {
   pennyRequestAsrJob,
   pennyRunAsrToCompletion,
   recordPennyReviewAction,
+  signOffPennyReview,
 } from '@/lib/mii/penny';
 import type { AsrSegment, AsrTranscriptResult, IncidentContext } from '@/lib/mii/types';
 
@@ -1112,6 +1113,88 @@ check('Transcript review sign-off is recorded on readiness', () => {
   ok(rs.readyForAttachment, 'readyForAttachment true');
   ok(!!rs.signedOffBy, 'signedOffBy set');
   ok(!!rs.signedOffAt, 'signedOffAt set');
+});
+
+// =========================================================================
+// Phase 2H — incident audit linkage + reviewer sign-off
+// =========================================================================
+
+// Run a full clean PENNY flow through sign-off, attach, and process.
+function runPennySignedFlow(scenarioId: string): { s: MiiState; incidentId?: string } {
+  const s = fresh();
+  const assetId = placeholderAudio(s);
+  const plan = createPennyPlan(s, { audioAssetId: assetId, provider: 'MOCK_SCENARIO', scenarioId, actor: ACTOR });
+  pennyRunAsrToCompletion(s, plan.id, ACTOR);
+  const pkg = evaluateAsrResultForPenny(s, plan.id, ACTOR)!;
+  signOffPennyReview(s, { planId: plan.id, packageId: pkg.id, actor: ACTOR });
+  const att = pennyAttachTranscriptPackage(s, plan.id, ACTOR)!;
+  const { incidentId } = processAudioTranscriptAttachment(s, att.id, ACTOR);
+  return { s, incidentId };
+}
+
+check('PENNY review sign-off requires readiness', () => {
+  const s = fresh();
+  const { planId, packageId } = buildPennyPackageFromSegments(s, [WARN_SEG]);
+  let threw = false;
+  try {
+    signOffPennyReview(s, { planId, packageId, actor: ACTOR });
+  } catch {
+    threw = true;
+  }
+  ok(threw, 'sign-off before resolving warning throws');
+  const pkg = s.pennyTranscriptPackages.find((p) => p.id === packageId)!;
+  const warnIssue = pkg.qualityIssues.find((i) => i.severity === 'WARNING')!;
+  recordPennyReviewAction(s, { planId, packageId, issueId: warnIssue.id, actionType: 'ACKNOWLEDGE_WARNING', actor: ACTOR });
+  const rs = signOffPennyReview(s, { planId, packageId, actor: ACTOR })!;
+  ok(!!rs.signedOffBy, 'signedOffBy set');
+  ok(!!rs.signedOffAt, 'signedOffAt set');
+  ok(s.audit.some((a) => a.action === 'PENNY_REVIEW_SIGNED_OFF'), 'audit PENNY_REVIEW_SIGNED_OFF');
+});
+
+check('PENNY sign-off does not attach or process', () => {
+  const s = fresh();
+  const assetId = placeholderAudio(s);
+  const plan = createPennyPlan(s, { audioAssetId: assetId, provider: 'MOCK_SCENARIO', scenarioId: 'medical-3-41', actor: ACTOR });
+  pennyRunAsrToCompletion(s, plan.id, ACTOR);
+  const pkg = evaluateAsrResultForPenny(s, plan.id, ACTOR)!;
+  signOffPennyReview(s, { planId: plan.id, packageId: pkg.id, actor: ACTOR });
+  eq(s.audioTranscriptAttachments.length, 0, 'no attachment created by sign-off');
+  eq(s.incidents.length, 0, 'no incident created by sign-off');
+});
+
+check('Incident captures transcript review snapshot on PENNY processing', () => {
+  const { s, incidentId } = runPennySignedFlow('medical-3-41');
+  const inc = s.incidents.find((i) => i.id === incidentId)!;
+  ok(!!inc.transcriptReviewSnapshot, 'snapshot exists');
+  eq(inc.transcriptReviewSnapshot!.status, 'PASS', 'snapshot status PASS');
+  ok(!!inc.transcriptReviewSnapshot!.signedOffBy, 'snapshot signedOffBy present');
+  ok(s.audit.some((a) => a.action === 'INCIDENT_TRANSCRIPT_REVIEW_LINKED'), 'audit LINKED');
+  ok(s.audit.some((a) => a.action === 'INCIDENT_TRANSCRIPT_REVIEW_SNAPSHOT'), 'audit SNAPSHOT');
+});
+
+check('Incident records transcript signoff audit', () => {
+  const { s, incidentId } = runPennySignedFlow('medical-3-41');
+  const signOffAudit = s.audit.filter(
+    (a) => a.action === 'INCIDENT_TRANSCRIPT_SIGNOFF_RECORDED' && a.incidentId === incidentId
+  );
+  ok(signOffAudit.length > 0, 'audit INCIDENT_TRANSCRIPT_SIGNOFF_RECORDED');
+});
+
+check('Incident snapshot does not apply to direct scenario', () => {
+  const { incident } = runInstant('medical-3-41');
+  eq(incident!.transcriptReviewSnapshot, undefined, 'no snapshot for direct scenario');
+});
+
+check('Transcript review snapshot survives conflict path', () => {
+  const { s, incidentId } = runPennySignedFlow('conflict-address');
+  const inc = s.incidents.find((i) => i.id === incidentId)!;
+  eq(inc.status, 'CONFLICT', 'incident status CONFLICT');
+  ok(!!inc.transcriptReviewSnapshot, 'snapshot exists');
+  eq(inc.transcriptReviewSnapshot!.status, 'PASS', 'snapshot status PASS');
+  // Conflict still blocks mock CAD submission.
+  const gate = evaluateTranscriptReviewGateForIncident(s, incidentId!);
+  const readiness = evaluateIncidentSafetyReadiness(inc, gate);
+  ok(!readiness.canSubmit, 'conflict still blocks submit');
 });
 
 // =========================================================================

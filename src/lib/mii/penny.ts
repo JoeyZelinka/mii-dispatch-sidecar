@@ -679,6 +679,7 @@ export function recordPennyReviewAction(
     MARK_REVIEW_READY: 'Marked the transcript review ready.',
     MARK_READY_FOR_ATTACHMENT: 'Marked the transcript ready for attachment.',
     ADD_REVIEW_NOTE: 'Added a review note.',
+    SIGN_OFF_REVIEW: 'Signed off the transcript review.',
   };
 
   // Deterministic guards for actions that require a note.
@@ -752,8 +753,59 @@ export function recordPennyReviewAction(
     case 'MARK_READY_FOR_ATTACHMENT':
       evaluatePennyReviewReadiness(draft, input.planId, input.packageId, actor);
       break;
+    case 'SIGN_OFF_REVIEW':
+      // Sign-off is handled by signOffPennyReview(); nothing extra here.
+      break;
   }
 
   reviewState.updatedAt = nowIso();
+  return reviewState;
+}
+
+// Explicit reviewer sign-off. Requires a fully resolved, ready package. Records
+// accountability only — it never attaches or processes the transcript.
+export function signOffPennyReview(
+  draft: MiiState,
+  input: { planId: string; packageId: string; actor?: string; note?: string }
+): PennyReviewState | undefined {
+  const actor = input.actor ?? REVIEW_ACTOR;
+  const plan = draft.pennyPlans.find((p) => p.id === input.planId);
+  const pkg = draft.pennyTranscriptPackages.find((p) => p.id === input.packageId);
+  if (!plan || !pkg) return undefined;
+
+  // Re-evaluate readiness first so overrides/acknowledgements are reflected.
+  const reviewState = evaluatePennyReviewReadiness(draft, input.planId, input.packageId, actor)!;
+  const counts = computeGateCounts(pkg, reviewState);
+
+  const ready =
+    reviewState.readyForAttachment &&
+    pkg.normalizedTranscriptText.length > 0 &&
+    counts.unresolvedBlockingCount === 0 &&
+    counts.unresolvedWarningCount === 0;
+  if (!ready) {
+    throw new Error(
+      'PENNY review cannot be signed off until all warnings/blocking issues are resolved.'
+    );
+  }
+
+  reviewState.signedOffBy = actor;
+  reviewState.signedOffAt = nowIso();
+  if (input.note?.trim()) reviewState.reviewNotes.push(input.note.trim());
+  addReviewAction(reviewState, {
+    actionType: 'SIGN_OFF_REVIEW',
+    actor,
+    summary: 'Signed off the transcript review.',
+    note: input.note,
+  });
+  reviewState.updatedAt = nowIso();
+
+  pennyAudit(
+    draft,
+    'PENNY_REVIEW_SIGNED_OFF',
+    actor,
+    `PENNY transcript review signed off by ${actor}.`,
+    plan.id,
+    { planId: plan.id, packageId: pkg.id }
+  );
   return reviewState;
 }

@@ -18,6 +18,8 @@ import type {
 import { mockAsrAdapter } from './asr/mockAsrAdapter';
 import { getAsrProviderDefinition } from './asr/providerRegistry';
 import { createDeterministicWaveform, estimateDurationFromSegments } from './audioTimeline';
+import { evaluateTranscriptReviewGateForIncident } from './transcriptReviewGate';
+import type { IncidentTranscriptReviewSnapshot } from './types';
 import { AGENCY, TENANT, getScenario } from './seed';
 import { detectCues } from './cueDetector';
 import { extractFields } from './extractor';
@@ -965,7 +967,73 @@ export function processAudioTranscriptAttachment(
     });
   }
 
+  // Phase 2H — capture a transcript review snapshot + incident audit linkage when
+  // the incident was created/updated from a PENNY-reviewed transcript package.
+  // Requires attachment.activeIncidentId to already be set (done above).
+  if (incidentId) {
+    captureTranscriptReviewSnapshot(draft, incidentId, correlationId, actor);
+  }
+
   return { incidentId };
+}
+
+function captureTranscriptReviewSnapshot(
+  draft: MiiState,
+  incidentId: string,
+  correlationId: string,
+  actor: string
+): void {
+  const gate = evaluateTranscriptReviewGateForIncident(draft, incidentId);
+  if (gate.status === 'NOT_APPLICABLE') return;
+  const incident = draft.incidents.find((i) => i.id === incidentId);
+  if (!incident) return;
+
+  const reviewState = gate.linkedReviewStateId
+    ? draft.pennyReviewStates.find((r) => r.id === gate.linkedReviewStateId)
+    : undefined;
+
+  const snapshot: IncidentTranscriptReviewSnapshot = {
+    status: gate.status,
+    planId: gate.linkedPlanId,
+    packageId: gate.linkedPackageId,
+    reviewStateId: gate.linkedReviewStateId,
+    signedOffBy: reviewState?.signedOffBy,
+    signedOffAt: reviewState?.signedOffAt,
+    summary: gate.summary,
+    blockingCount: gate.blockingCount,
+    warningCount: gate.warningCount,
+    unresolvedWarningCount: gate.unresolvedWarningCount,
+    unresolvedBlockingCount: gate.unresolvedBlockingCount,
+    capturedAt: nowIso(),
+  };
+  incident.transcriptReviewSnapshot = snapshot;
+
+  audit(draft, {
+    correlationId,
+    action: 'INCIDENT_TRANSCRIPT_REVIEW_LINKED',
+    actor,
+    incidentId,
+    summary: 'Incident linked to PENNY-reviewed transcript package.',
+    after: { planId: snapshot.planId, packageId: snapshot.packageId },
+  });
+  audit(draft, {
+    correlationId,
+    action: 'INCIDENT_TRANSCRIPT_REVIEW_SNAPSHOT',
+    actor,
+    incidentId,
+    summary: `Transcript review snapshot captured: ${snapshot.status}.`,
+    after: snapshot,
+  });
+  if (reviewState?.signedOffBy) {
+    audit(draft, {
+      correlationId,
+      action: 'INCIDENT_TRANSCRIPT_SIGNOFF_RECORDED',
+      actor,
+      incidentId,
+      summary: `Transcript review sign-off recorded for incident: ${reviewState.signedOffBy}.`,
+      after: { signedOffBy: reviewState.signedOffBy, signedOffAt: reviewState.signedOffAt },
+    });
+  }
 }
 
 export function clearAudioIntake(draft: MiiState): void {

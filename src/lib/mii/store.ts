@@ -60,6 +60,7 @@ import {
   pennyRequestAsrJob as enginePennyRequest,
   pennyRunAsrToCompletion as enginePennyRunToCompletion,
   recordPennyReviewAction as engineRecordReviewAction,
+  signOffPennyReview as engineSignOffReview,
 } from './penny';
 import { evaluateTranscriptReviewGateForIncident as engineTranscriptReviewGate } from './transcriptReviewGate';
 
@@ -284,6 +285,13 @@ export const miiStore = {
   },
   evaluatePennyReviewReadiness(planId: string, packageId: string): PennyReviewState | undefined {
     return update((d) => engineEvaluateReviewReadiness(d, planId, packageId, REVIEWER));
+  },
+  signOffPennyReview(
+    planId: string,
+    packageId: string,
+    note?: string
+  ): PennyReviewState | undefined {
+    return update((d) => engineSignOffReview(d, { planId, packageId, note, actor: REVIEWER }));
   },
   // Read-only transcript-readiness gate — computed against the current snapshot.
   pennyQualityGate(planId: string, packageId: string): PennyQualityGateResult {

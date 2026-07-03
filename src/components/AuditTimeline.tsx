@@ -38,6 +38,10 @@ const actionColor: Partial<Record<AuditAction, 'default' | 'primary' | 'success'
   PENNY_REVIEW_NOTE_ADDED: 'info',
   PENNY_PACKAGE_MARKED_READY: 'success',
   PENNY_RETRANSCRIPTION_REQUESTED: 'warning',
+  PENNY_REVIEW_SIGNED_OFF: 'success',
+  INCIDENT_TRANSCRIPT_REVIEW_LINKED: 'secondary',
+  INCIDENT_TRANSCRIPT_REVIEW_SNAPSHOT: 'info',
+  INCIDENT_TRANSCRIPT_SIGNOFF_RECORDED: 'success',
 };
 
 export default function AuditTimeline({
