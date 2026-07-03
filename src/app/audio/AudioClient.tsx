@@ -30,6 +30,7 @@ import AsrResultCard from '@/components/AsrResultCard';
 import AsrJobCard from '@/components/AsrJobCard';
 import AudioTimelineCard from '@/components/AudioTimelineCard';
 import PennyPlanCard from '@/components/PennyPlanCard';
+import PennyReviewCard from '@/components/PennyReviewCard';
 import {
   miiStore,
   createPlaceholderAudioAssetInput,
@@ -39,6 +40,7 @@ import {
   useAsrJobs,
   usePennyPlans,
   usePennyTranscriptPackages,
+  usePennyReviewStates,
   useIncidents,
 } from '@/lib/mii/store';
 import { SCENARIOS } from '@/lib/mii/seed';
@@ -76,6 +78,7 @@ export default function AudioClient() {
   const asrJobs = useAsrJobs();
   const pennyPlans = usePennyPlans();
   const pennyPackages = usePennyTranscriptPackages();
+  const pennyReviewStates = usePennyReviewStates();
   const incidents = useIncidents();
 
   const [sourceType, setSourceType] = React.useState<AudioSourceType>('SIMULATED_UPLOAD');
@@ -135,6 +138,16 @@ export default function AudioClient() {
   const activePennyPackage = activePennyPlan?.transcriptPackageId
     ? pennyPackages.find((p) => p.id === activePennyPlan.transcriptPackageId)
     : undefined;
+  const activePennyReviewState =
+    activePennyPlan && activePennyPackage
+      ? pennyReviewStates.find(
+          (r) => r.planId === activePennyPlan.id && r.packageId === activePennyPackage.id
+        )
+      : undefined;
+  const activePennyGate =
+    activePennyPlan && activePennyPackage
+      ? miiStore.pennyQualityGate(activePennyPlan.id, activePennyPackage.id)
+      : undefined;
   const pennyPlanTerminalish =
     activePennyPlan != null && ['ATTACHED', 'CANCELLED'].includes(activePennyPlan.status);
 
@@ -292,13 +305,57 @@ export default function AudioClient() {
     if (!activePennyPlanId) return;
     const attachment = miiStore.pennyAttachTranscriptPackage(activePennyPlanId);
     if (!attachment) {
-      setToast('PENNY could not attach — transcript is not ready.');
+      setToast('PENNY could not attach — transcript is not review-ready.');
       return;
     }
     setActiveAttachmentId(attachment.id);
     setTranscriptText(attachment.transcriptText);
     setAttachScenarioId(attachment.scenarioId);
     setToast('PENNY attached the reviewed transcript — process it in Step 4.');
+  };
+
+  // --- PENNY review handlers ---
+  const pennyAcknowledge = (issueId: string, severity: 'INFO' | 'WARNING') => {
+    if (!activePennyPlan || !activePennyPackage) return;
+    miiStore.recordPennyReviewAction({
+      planId: activePennyPlan.id,
+      packageId: activePennyPackage.id,
+      issueId,
+      actionType: severity === 'WARNING' ? 'ACKNOWLEDGE_WARNING' : 'ACKNOWLEDGE_INFO',
+    });
+  };
+
+  const pennyOverride = (issueId: string, note: string) => {
+    if (!activePennyPlan || !activePennyPackage || !note.trim()) return;
+    miiStore.recordPennyReviewAction({
+      planId: activePennyPlan.id,
+      packageId: activePennyPackage.id,
+      issueId,
+      actionType: 'OVERRIDE_BLOCKING',
+      note,
+    });
+  };
+
+  const pennyAddNote = (note: string) => {
+    if (!activePennyPlan || !activePennyPackage || !note.trim()) return;
+    miiStore.recordPennyReviewAction({
+      planId: activePennyPlan.id,
+      packageId: activePennyPackage.id,
+      actionType: 'ADD_REVIEW_NOTE',
+      note,
+    });
+  };
+
+  const pennyEvaluateReadiness = () => {
+    if (!activePennyPlan || !activePennyPackage) return;
+    const rs = miiStore.evaluatePennyReviewReadiness(activePennyPlan.id, activePennyPackage.id);
+    if (rs) {
+      setToast(
+        rs.readyForAttachment
+          ? 'Review readiness evaluated — ready for attachment.'
+          : 'Review readiness evaluated — still needs review.'
+      );
+    }
   };
 
   const attachAsr = (asrResultId: string) => {
@@ -747,7 +804,12 @@ export default function AudioClient() {
                 variant="contained"
                 color="success"
                 onClick={pennyAttach}
-                disabled={!activePennyPackage?.readyForAttachment || activePennyPlan?.status === 'ATTACHED'}
+                disabled={
+                  activePennyPlan?.status === 'ATTACHED' ||
+                  (activePennyGate
+                    ? activePennyGate.status !== 'PASS'
+                    : !activePennyPackage?.readyForAttachment)
+                }
               >
                 Attach Ready Transcript
               </Button>
@@ -759,11 +821,35 @@ export default function AudioClient() {
               </Typography>
             )}
 
+            {activePennyGate && activePennyGate.status !== 'PASS' && activePennyPlan?.status !== 'ATTACHED' && (
+              <Typography variant="caption" color="text.secondary">
+                Resolve PENNY review items below, then Evaluate Review Readiness before attaching.
+              </Typography>
+            )}
+
             {activePennyPlan && (
               <PennyPlanCard
                 plan={activePennyPlan}
                 pkg={activePennyPackage}
+                reviewState={activePennyReviewState}
+                qualityGate={activePennyGate}
                 filename={assets.find((a) => a.id === activePennyPlan.audioAssetId)?.filename}
+              />
+            )}
+
+            {activePennyPlan && activePennyPackage && activePennyGate && (
+              <PennyReviewCard
+                plan={activePennyPlan}
+                pkg={activePennyPackage}
+                reviewState={activePennyReviewState}
+                gate={activePennyGate}
+                onAcknowledgeIssue={(issueId) => {
+                  const iss = activePennyPackage.qualityIssues.find((i) => i.id === issueId);
+                  pennyAcknowledge(issueId, iss?.severity === 'WARNING' ? 'WARNING' : 'INFO');
+                }}
+                onOverrideIssue={pennyOverride}
+                onAddNote={pennyAddNote}
+                onEvaluateReadiness={pennyEvaluateReadiness}
               />
             )}
           </Stack>

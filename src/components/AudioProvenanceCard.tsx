@@ -10,6 +10,7 @@ import type {
 } from '@/lib/mii/types';
 import type {
   IncidentContext,
+  PennyReviewState,
   PennyTranscriptPackage,
   PennyTranscriptionPlan,
 } from '@/lib/mii/types';
@@ -51,6 +52,7 @@ export default function AudioProvenanceCard({
   asrJobs = [],
   pennyPlans = [],
   pennyPackages = [],
+  pennyReviewStates = [],
   incident,
 }: {
   attachments: AudioTranscriptAttachment[];
@@ -59,6 +61,7 @@ export default function AudioProvenanceCard({
   asrJobs?: AsrJob[];
   pennyPlans?: PennyTranscriptionPlan[];
   pennyPackages?: PennyTranscriptPackage[];
+  pennyReviewStates?: PennyReviewState[];
   incident?: IncidentContext;
 }) {
   if (attachments.length === 0) return null;
@@ -85,6 +88,26 @@ export default function AudioProvenanceCard({
             ? pennyPackages.find((p) => p.id === pennyPlan.transcriptPackageId)
             : undefined;
           const latestDecision = pennyPlan?.decisions[pennyPlan.decisions.length - 1];
+          const pennyReview =
+            pennyPlan && pennyPkg
+              ? pennyReviewStates.find(
+                  (r) => r.planId === pennyPlan.id && r.packageId === pennyPkg.id
+                )
+              : undefined;
+          const reviewCounts = pennyPkg
+            ? (() => {
+                const ack = new Set(pennyReview?.acknowledgedIssueIds ?? []);
+                const ovr = new Set(pennyReview?.overriddenIssueIds ?? []);
+                const warns = pennyPkg.qualityIssues.filter((i) => i.severity === 'WARNING');
+                const blocks = pennyPkg.qualityIssues.filter((i) => i.severity === 'BLOCKING');
+                const uw = warns.filter((i) => !ack.has(i.id)).length;
+                const ub = blocks.filter((i) => !ovr.has(i.id)).length;
+                const ready = pennyReview?.readyForAttachment ?? pennyPkg.readyForAttachment;
+                const status = ub > 0 ? 'BLOCKED' : uw > 0 ? 'WARNING' : ready ? 'PASS' : 'WARNING';
+                return { uw, ub, status };
+              })()
+            : undefined;
+          const latestReviewAction = pennyReview?.actions[pennyReview.actions.length - 1];
           return (
             <Box key={att.id}>
               {idx > 0 && <Divider sx={{ my: 1.5 }} />}
@@ -230,6 +253,48 @@ export default function AudioProvenanceCard({
                   <Typography variant="caption" color="text.secondary">
                     PENNY coordinated transcription readiness only. The existing MII pipeline created
                     the incident context from the attached transcript.
+                  </Typography>
+                </Box>
+              )}
+
+              {pennyReview && reviewCounts && (
+                <Box
+                  sx={{
+                    mt: 1,
+                    p: 1,
+                    borderRadius: 1,
+                    border: '1px solid rgba(129,199,132,0.3)',
+                    background: 'rgba(129,199,132,0.06)',
+                  }}
+                >
+                  <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.75, mb: 0.5 }}>
+                    <Chip
+                      size="small"
+                      color={
+                        reviewCounts.status === 'PASS'
+                          ? 'success'
+                          : reviewCounts.status === 'BLOCKED'
+                            ? 'error'
+                            : 'warning'
+                      }
+                      variant="outlined"
+                      label={`Human Review: ${reviewCounts.status}`}
+                    />
+                    <Chip size="small" variant="outlined" label={pennyReview.reviewReady ? 'review ready' : 'not review ready'} />
+                    <Chip size="small" variant="outlined" label={pennyReview.readyForAttachment ? 'ready for attach' : 'not ready'} />
+                    <Chip size="small" variant="outlined" label={`${pennyReview.actions.length} actions`} />
+                    <Chip size="small" variant="outlined" label={`${pennyReview.reviewNotes.length} notes`} />
+                    <Chip size="small" variant="outlined" label={`${reviewCounts.uw} unresolved warn`} />
+                    <Chip size="small" variant="outlined" label={`${reviewCounts.ub} unresolved block`} />
+                  </Box>
+                  {latestReviewAction && (
+                    <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+                      Latest review action: {latestReviewAction.summary}
+                    </Typography>
+                  )}
+                  <Typography variant="caption" color="text.secondary">
+                    PENNY review affected transcript attachment readiness only. The MII pipeline
+                    created incident context after attachment.
                   </Typography>
                 </Box>
               )}

@@ -3,12 +3,20 @@
 import { Card, CardContent, Typography, Box, Chip, Divider, Alert } from '@mui/material';
 import SmartToyIcon from '@mui/icons-material/SmartToy';
 import type {
+  PennyReviewState,
   PennyTranscriptPackage,
   PennyTranscriptionPlan,
   TranscriptQualityIssueSeverity,
 } from '@/lib/mii/types';
+import type { PennyQualityGateResult } from '@/lib/mii/penny';
 import { formatDateTime } from '@/lib/format';
 import { getAsrProviderDefinition } from '@/lib/mii/asr/providerRegistry';
+
+const GATE_COLOR: Record<PennyQualityGateResult['status'], 'success' | 'warning' | 'error'> = {
+  PASS: 'success',
+  WARNING: 'warning',
+  BLOCKED: 'error',
+};
 
 const STATUS_COLOR: Record<
   PennyTranscriptionPlan['status'],
@@ -35,12 +43,16 @@ const SEVERITY_COLOR: Record<TranscriptQualityIssueSeverity, 'default' | 'warnin
 export default function PennyPlanCard({
   plan,
   pkg,
+  reviewState,
+  qualityGate,
   filename,
   compact = false,
   children,
 }: {
   plan: PennyTranscriptionPlan;
   pkg?: PennyTranscriptPackage;
+  reviewState?: PennyReviewState;
+  qualityGate?: PennyQualityGateResult;
   filename?: string;
   compact?: boolean;
   children?: React.ReactNode;
@@ -111,6 +123,32 @@ export default function PennyPlanCard({
                   </Box>
                 ))}
               </Box>
+            )}
+          </>
+        )}
+
+        {(qualityGate || reviewState) && (
+          <>
+            <Divider sx={{ my: 1 }} />
+            <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.75, alignItems: 'center' }}>
+              {qualityGate && (
+                <Chip size="small" color={GATE_COLOR[qualityGate.status]} label={`Review: ${qualityGate.status}`} />
+              )}
+              {qualityGate && (
+                <Chip
+                  size="small"
+                  variant="outlined"
+                  label={`${qualityGate.unresolvedWarningCount} unresolved warn · ${qualityGate.unresolvedBlockingCount} unresolved block`}
+                />
+              )}
+              {reviewState && (
+                <Chip size="small" variant="outlined" label={`${reviewState.reviewNotes.length} notes`} />
+              )}
+            </Box>
+            {reviewState && reviewState.actions.length > 0 && (
+              <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.5 }}>
+                Latest review action: {reviewState.actions[reviewState.actions.length - 1].summary}
+              </Typography>
             )}
           </>
         )}

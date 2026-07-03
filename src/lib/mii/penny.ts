@@ -5,6 +5,9 @@ import type {
   AuditAction,
   PennyDecision,
   PennyDecisionType,
+  PennyReviewAction,
+  PennyReviewActionType,
+  PennyReviewState,
   PennyTranscriptPackage,
   PennyTranscriptionPlan,
   TranscriptQualityIssue,
@@ -394,7 +397,27 @@ export function pennyAttachTranscriptPackage(
   const plan = draft.pennyPlans.find((p) => p.id === planId);
   if (!plan || !plan.transcriptPackageId) return undefined;
   const pkg = draft.pennyTranscriptPackages.find((p) => p.id === plan.transcriptPackageId);
-  if (!pkg || !pkg.readyForAttachment) return undefined;
+  if (!pkg) return undefined;
+
+  // Attachment readiness gate. When a human review is underway, the review state
+  // is authoritative: warnings must be acknowledged and blocking issues
+  // overridden (via evaluated readiness). When no review has been started, fall
+  // back to the Phase 2E package readiness (blocking issues already block).
+  const reviewState = draft.pennyReviewStates.find(
+    (r) => r.planId === plan.id && r.packageId === pkg.id
+  );
+  if (reviewState) {
+    const gate = computeGateCounts(pkg, reviewState);
+    const ready =
+      reviewState.readyForAttachment &&
+      gate.unresolvedBlockingCount === 0 &&
+      gate.unresolvedWarningCount === 0;
+    if (!ready) return undefined;
+  } else if (!pkg.readyForAttachment) {
+    return undefined;
+  }
+  // An overridden-but-empty transcript must never be attached (no fabrication).
+  if (pkg.normalizedTranscriptText.length === 0) return undefined;
 
   // Prefer the existing ASR attach path when the normalized transcript still
   // matches the ASR result verbatim; otherwise attach the normalized text.
@@ -430,4 +453,303 @@ export function pennyAttachTranscriptPackage(
     { planId: plan.id, attachmentId: attachment.id }
   );
   return attachment;
+}
+
+// --- Phase 2F: human review + transcript quality gate --------------------
+
+const REVIEW_ACTOR = 'Dispatcher (you)';
+
+interface GateCounts {
+  blockingCount: number;
+  warningCount: number;
+  infoCount: number;
+  unresolvedWarningCount: number;
+  unresolvedBlockingCount: number;
+}
+
+function computeGateCounts(
+  pkg: PennyTranscriptPackage,
+  reviewState?: PennyReviewState
+): GateCounts {
+  const ack = new Set(reviewState?.acknowledgedIssueIds ?? []);
+  const ovr = new Set(reviewState?.overriddenIssueIds ?? []);
+  const warnings = pkg.qualityIssues.filter((i) => i.severity === 'WARNING');
+  const blocking = pkg.qualityIssues.filter((i) => i.severity === 'BLOCKING');
+  return {
+    infoCount: pkg.qualityIssues.filter((i) => i.severity === 'INFO').length,
+    warningCount: warnings.length,
+    blockingCount: blocking.length,
+    unresolvedWarningCount: warnings.filter((i) => !ack.has(i.id)).length,
+    unresolvedBlockingCount: blocking.filter((i) => !ovr.has(i.id)).length,
+  };
+}
+
+export interface PennyQualityGateResult {
+  status: 'PASS' | 'WARNING' | 'BLOCKED';
+  summary: string;
+  blockingCount: number;
+  warningCount: number;
+  infoCount: number;
+  unresolvedWarningCount: number;
+  unresolvedBlockingCount: number;
+  readyForAttachment: boolean;
+}
+
+// Pure, read-only transcript-readiness gate. Does NOT modify state and is NOT a
+// CAD gate — it reflects transcript review status only.
+export function evaluatePennyQualityGate(
+  draft: MiiState,
+  planId: string,
+  packageId: string
+): PennyQualityGateResult {
+  const pkg = draft.pennyTranscriptPackages.find(
+    (p) => p.id === packageId && p.planId === planId
+  );
+  const reviewState = draft.pennyReviewStates.find(
+    (r) => r.planId === planId && r.packageId === packageId
+  );
+  if (!pkg) {
+    return {
+      status: 'BLOCKED',
+      summary: 'No transcript package found for this plan.',
+      blockingCount: 0,
+      warningCount: 0,
+      infoCount: 0,
+      unresolvedWarningCount: 0,
+      unresolvedBlockingCount: 0,
+      readyForAttachment: false,
+    };
+  }
+  const counts = computeGateCounts(pkg, reviewState);
+  const readyForAttachment = reviewState?.readyForAttachment ?? pkg.readyForAttachment;
+
+  let status: PennyQualityGateResult['status'];
+  let summary: string;
+  if (counts.unresolvedBlockingCount > 0) {
+    status = 'BLOCKED';
+    summary = `Transcript package has ${counts.unresolvedBlockingCount} blocking issue(s) requiring override.`;
+  } else if (counts.unresolvedWarningCount > 0) {
+    status = 'WARNING';
+    summary = `Transcript package has ${counts.unresolvedWarningCount} warning issue(s) requiring acknowledgement.`;
+  } else if (readyForAttachment && pkg.normalizedTranscriptText.length > 0) {
+    status = 'PASS';
+    summary = 'Transcript package is ready for attachment.';
+  } else {
+    status = 'WARNING';
+    summary = 'Transcript package requires review readiness evaluation before attachment.';
+  }
+
+  return { status, summary, ...counts, readyForAttachment };
+}
+
+function addReviewAction(
+  reviewState: PennyReviewState,
+  input: {
+    actionType: PennyReviewActionType;
+    actor: string;
+    summary: string;
+    issueId?: string;
+    note?: string;
+  }
+): PennyReviewAction {
+  const action: PennyReviewAction = {
+    id: makeId('prev'),
+    planId: reviewState.planId,
+    packageId: reviewState.packageId,
+    issueId: input.issueId,
+    actionType: input.actionType,
+    actor: input.actor,
+    summary: input.summary,
+    note: input.note,
+    createdAt: nowIso(),
+  };
+  reviewState.actions.push(action);
+  reviewState.reviewer = input.actor;
+  reviewState.updatedAt = nowIso();
+  return action;
+}
+
+export function getOrCreatePennyReviewState(
+  draft: MiiState,
+  planId: string,
+  packageId: string,
+  actor: string = REVIEW_ACTOR
+): PennyReviewState {
+  const existing = draft.pennyReviewStates.find(
+    (r) => r.planId === planId && r.packageId === packageId
+  );
+  if (existing) return existing;
+
+  const pkg = draft.pennyTranscriptPackages.find((p) => p.id === packageId);
+  const reviewState: PennyReviewState = {
+    id: makeId('prs'),
+    planId,
+    packageId,
+    acknowledgedIssueIds: [],
+    overriddenIssueIds: [],
+    reviewNotes: [],
+    reviewReady: false,
+    readyForAttachment: pkg?.readyForAttachment ?? false,
+    reviewer: actor,
+    updatedAt: nowIso(),
+    actions: [],
+  };
+  draft.pennyReviewStates.push(reviewState);
+  return reviewState;
+}
+
+export function evaluatePennyReviewReadiness(
+  draft: MiiState,
+  planId: string,
+  packageId: string,
+  actor: string = REVIEW_ACTOR
+): PennyReviewState | undefined {
+  const plan = draft.pennyPlans.find((p) => p.id === planId);
+  const pkg = draft.pennyTranscriptPackages.find((p) => p.id === packageId);
+  if (!plan || !pkg) return undefined;
+  const reviewState = getOrCreatePennyReviewState(draft, planId, packageId, actor);
+
+  const ack = new Set(reviewState.acknowledgedIssueIds);
+  const ovr = new Set(reviewState.overriddenIssueIds);
+  const warnings = pkg.qualityIssues.filter((i) => i.severity === 'WARNING');
+  const blocking = pkg.qualityIssues.filter((i) => i.severity === 'BLOCKING');
+  const allWarningsAck = warnings.every((i) => ack.has(i.id));
+  const allBlockingOverridden = blocking.every((i) => ovr.has(i.id));
+
+  const reviewReady = allWarningsAck && allBlockingOverridden;
+  const readyForAttachment = reviewReady && pkg.normalizedTranscriptText.length > 0;
+  reviewState.reviewReady = reviewReady;
+  reviewState.readyForAttachment = readyForAttachment;
+  reviewState.updatedAt = nowIso();
+
+  if (reviewReady) {
+    plan.status = 'REVIEW_READY';
+    plan.updatedAt = nowIso();
+    pennyAudit(
+      draft,
+      'PENNY_REVIEW_READY',
+      actor,
+      `PENNY review marked ready for ${assetFilename(draft, plan.audioAssetId)}.`,
+      plan.id,
+      { planId, packageId }
+    );
+  }
+  if (readyForAttachment) {
+    plan.status = 'READY_FOR_ATTACHMENT';
+    plan.updatedAt = nowIso();
+    pkg.readyForAttachment = true;
+    pennyAudit(
+      draft,
+      'PENNY_PACKAGE_MARKED_READY',
+      actor,
+      `PENNY transcript package marked ready for attachment for ${assetFilename(draft, plan.audioAssetId)}.`,
+      plan.id,
+      { planId, packageId }
+    );
+  }
+  return reviewState;
+}
+
+export function recordPennyReviewAction(
+  draft: MiiState,
+  input: {
+    planId: string;
+    packageId: string;
+    issueId?: string;
+    actionType: PennyReviewActionType;
+    note?: string;
+    actor?: string;
+  }
+): PennyReviewState | undefined {
+  const actor = input.actor ?? REVIEW_ACTOR;
+  const plan = draft.pennyPlans.find((p) => p.id === input.planId);
+  const pkg = draft.pennyTranscriptPackages.find((p) => p.id === input.packageId);
+  if (!plan || !pkg) return undefined;
+  const reviewState = getOrCreatePennyReviewState(draft, input.planId, input.packageId, actor);
+
+  const SUMMARIES: Record<PennyReviewActionType, string> = {
+    ACKNOWLEDGE_INFO: 'Acknowledged an info issue.',
+    ACKNOWLEDGE_WARNING: 'Acknowledged a warning issue.',
+    OVERRIDE_BLOCKING: 'Overrode a blocking issue with a note.',
+    REQUEST_RETRANSCRIPTION: 'Requested re-transcription.',
+    MARK_REVIEW_READY: 'Marked the transcript review ready.',
+    MARK_READY_FOR_ATTACHMENT: 'Marked the transcript ready for attachment.',
+    ADD_REVIEW_NOTE: 'Added a review note.',
+  };
+
+  // Deterministic guards for actions that require a note.
+  if (input.actionType === 'OVERRIDE_BLOCKING' && !input.note?.trim()) {
+    throw new Error('OVERRIDE_BLOCKING requires a note.');
+  }
+  if (input.actionType === 'ADD_REVIEW_NOTE' && !input.note?.trim()) {
+    throw new Error('ADD_REVIEW_NOTE requires a note.');
+  }
+
+  addReviewAction(reviewState, {
+    actionType: input.actionType,
+    actor,
+    summary: SUMMARIES[input.actionType],
+    issueId: input.issueId,
+    note: input.note,
+  });
+  pennyAudit(
+    draft,
+    'PENNY_REVIEW_ACTION_RECORDED',
+    actor,
+    `PENNY review action: ${SUMMARIES[input.actionType]}`,
+    plan.id,
+    { planId: plan.id, packageId: pkg.id, actionType: input.actionType, issueId: input.issueId }
+  );
+
+  switch (input.actionType) {
+    case 'ACKNOWLEDGE_INFO':
+    case 'ACKNOWLEDGE_WARNING':
+      if (input.issueId && !reviewState.acknowledgedIssueIds.includes(input.issueId)) {
+        reviewState.acknowledgedIssueIds.push(input.issueId);
+      }
+      break;
+    case 'OVERRIDE_BLOCKING':
+      if (input.issueId && !reviewState.overriddenIssueIds.includes(input.issueId)) {
+        reviewState.overriddenIssueIds.push(input.issueId);
+      }
+      pennyAudit(
+        draft,
+        'PENNY_REVIEW_OVERRIDE_RECORDED',
+        actor,
+        `PENNY blocking issue overridden with note for ${assetFilename(draft, plan.audioAssetId)}.`,
+        plan.id,
+        { planId: plan.id, packageId: pkg.id, issueId: input.issueId, note: input.note }
+      );
+      break;
+    case 'REQUEST_RETRANSCRIPTION':
+      plan.status = 'NEEDS_REVIEW';
+      plan.updatedAt = nowIso();
+      pennyAudit(
+        draft,
+        'PENNY_RETRANSCRIPTION_REQUESTED',
+        actor,
+        `PENNY re-transcription requested for ${assetFilename(draft, plan.audioAssetId)}.`,
+        plan.id,
+        { planId: plan.id, packageId: pkg.id }
+      );
+      break;
+    case 'ADD_REVIEW_NOTE':
+      if (input.note) reviewState.reviewNotes.push(input.note);
+      pennyAudit(
+        draft,
+        'PENNY_REVIEW_NOTE_ADDED',
+        actor,
+        `PENNY review note added for ${assetFilename(draft, plan.audioAssetId)}.`,
+        plan.id,
+        { planId: plan.id, packageId: pkg.id }
+      );
+      break;
+    case 'MARK_REVIEW_READY':
+    case 'MARK_READY_FOR_ATTACHMENT':
+      evaluatePennyReviewReadiness(draft, input.planId, input.packageId, actor);
+      break;
+  }
+
+  reviewState.updatedAt = nowIso();
+  return reviewState;
 }

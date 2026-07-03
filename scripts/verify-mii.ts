@@ -45,11 +45,14 @@ import {
 import {
   createPennyPlan,
   evaluateAsrResultForPenny,
+  evaluatePennyQualityGate,
+  evaluatePennyReviewReadiness,
   pennyAttachTranscriptPackage,
   pennyRequestAsrJob,
   pennyRunAsrToCompletion,
+  recordPennyReviewAction,
 } from '@/lib/mii/penny';
-import type { AsrTranscriptResult, IncidentContext } from '@/lib/mii/types';
+import type { AsrSegment, AsrTranscriptResult, IncidentContext } from '@/lib/mii/types';
 
 // Mirror the store's freshState() exactly (freshState is store-internal).
 function fresh(): MiiState {
@@ -67,7 +70,41 @@ function fresh(): MiiState {
     asrJobs: [],
     pennyPlans: [],
     pennyTranscriptPackages: [],
+    pennyReviewStates: [],
   };
+}
+
+// Build a PENNY package deterministically from a custom ASR result so review
+// tests can target specific warning/blocking severities.
+let _customResultSeq = 0;
+function buildPennyPackageFromSegments(
+  s: MiiState,
+  segments: AsrSegment[]
+): { planId: string; packageId: string } {
+  const assetId = addAudioAsset(s, createPlaceholderAudioAssetInput()).id;
+  const plan = createPennyPlan(s, {
+    audioAssetId: assetId,
+    provider: 'MOCK_SCENARIO',
+    scenarioId: 'medical-3-41',
+    actor: ACTOR,
+  });
+  _customResultSeq += 1;
+  const result: AsrTranscriptResult = {
+    id: `asr_custom_${_customResultSeq}`,
+    audioAssetId: assetId,
+    provider: 'MOCK_SCENARIO',
+    status: 'COMPLETED',
+    transcriptText: segments.map((seg) => `${seg.speaker}: ${seg.text}`).join('\n'),
+    segments,
+    createdAt: '2026-01-01T00:00:00.000Z',
+    completedAt: '2026-01-01T00:00:00.000Z',
+    scenarioId: 'medical-3-41',
+  };
+  s.asrTranscriptResults.push(result);
+  plan.asrResultId = result.id;
+  plan.status = 'ASR_COMPLETED';
+  const pkg = evaluateAsrResultForPenny(s, plan.id, ACTOR)!;
+  return { planId: plan.id, packageId: pkg.id };
 }
 
 // A completed mock Medical ASR result for helper-level checks.
@@ -872,6 +909,111 @@ check('PENNY low-confidence blocking threshold', () => {
     'BLOCKING LOW_CONFIDENCE_SEGMENT present'
   );
   ok(!pkg.readyForAttachment, 'not ready');
+});
+
+// =========================================================================
+// Phase 2F — PENNY human review + transcript quality gate
+// =========================================================================
+
+const WARN_SEG: AsrSegment = { id: 'seg_warn', speaker: 'MDSO', text: 'You have a 3-41 at 210 174th Street.', startMs: 0, endMs: 1800, confidence: 0.7 };
+const BLOCK_SEG: AsrSegment = { id: 'seg_block', speaker: 'MDSO', text: 'You have a 3-41 at 210 174th Street.', startMs: 0, endMs: 1800, confidence: 0.4 };
+
+check('PENNY quality gate passes clean Medical package', () => {
+  const s = fresh();
+  const assetId = placeholderAudio(s);
+  const plan = createPennyPlan(s, { audioAssetId: assetId, provider: 'MOCK_SCENARIO', scenarioId: 'medical-3-41', actor: ACTOR });
+  pennyRunAsrToCompletion(s, plan.id, ACTOR);
+  const pkg = evaluateAsrResultForPenny(s, plan.id, ACTOR)!;
+  const gate = evaluatePennyQualityGate(s, plan.id, pkg.id);
+  eq(gate.status, 'PASS', 'gate PASS');
+  eq(gate.unresolvedBlockingCount, 0, 'no unresolved blocking');
+  eq(gate.unresolvedWarningCount, 0, 'no unresolved warnings');
+  ok(gate.readyForAttachment, 'readyForAttachment true');
+});
+
+check('PENNY warning issue requires acknowledgement', () => {
+  const s = fresh();
+  const { planId, packageId } = buildPennyPackageFromSegments(s, [WARN_SEG]);
+  let gate = evaluatePennyQualityGate(s, planId, packageId);
+  eq(gate.status, 'WARNING', 'gate WARNING');
+  eq(gate.unresolvedWarningCount, 1, 'unresolvedWarningCount 1');
+  // Acknowledge by the actual issue id (LOW_CONFIDENCE_SEGMENT).
+  const pkg = s.pennyTranscriptPackages.find((p) => p.id === packageId)!;
+  const warnIssue = pkg.qualityIssues.find((i) => i.severity === 'WARNING')!;
+  recordPennyReviewAction(s, { planId, packageId, issueId: warnIssue.id, actionType: 'ACKNOWLEDGE_WARNING', actor: ACTOR });
+  evaluatePennyReviewReadiness(s, planId, packageId, ACTOR);
+  gate = evaluatePennyQualityGate(s, planId, packageId);
+  eq(gate.unresolvedWarningCount, 0, 'unresolvedWarningCount 0 after ack');
+  const rs = s.pennyReviewStates.find((r) => r.planId === planId && r.packageId === packageId)!;
+  ok(rs.reviewReady, 'reviewReady true');
+  ok(rs.readyForAttachment, 'readyForAttachment true');
+});
+
+check('PENNY blocking issue blocks attachment', () => {
+  const s = fresh();
+  const { planId, packageId } = buildPennyPackageFromSegments(s, [BLOCK_SEG]);
+  const gate = evaluatePennyQualityGate(s, planId, packageId);
+  eq(gate.status, 'BLOCKED', 'gate BLOCKED');
+  eq(pennyAttachTranscriptPackage(s, planId, ACTOR), undefined, 'attach refused');
+});
+
+check('PENNY blocking override requires note', () => {
+  const s = fresh();
+  const { planId, packageId } = buildPennyPackageFromSegments(s, [BLOCK_SEG]);
+  const pkg = s.pennyTranscriptPackages.find((p) => p.id === packageId)!;
+  const blockIssue = pkg.qualityIssues.find((i) => i.severity === 'BLOCKING')!;
+  let threw = false;
+  try {
+    recordPennyReviewAction(s, { planId, packageId, issueId: blockIssue.id, actionType: 'OVERRIDE_BLOCKING', actor: ACTOR });
+  } catch {
+    threw = true;
+  }
+  ok(threw, 'override without note throws');
+  recordPennyReviewAction(s, { planId, packageId, issueId: blockIssue.id, actionType: 'OVERRIDE_BLOCKING', note: 'Confirmed by dispatcher on readback.', actor: ACTOR });
+  evaluatePennyReviewReadiness(s, planId, packageId, ACTOR);
+  const gate = evaluatePennyQualityGate(s, planId, packageId);
+  eq(gate.unresolvedBlockingCount, 0, 'unresolvedBlockingCount 0 after override');
+  const rs = s.pennyReviewStates.find((r) => r.planId === planId && r.packageId === packageId)!;
+  ok(rs.reviewReady, 'reviewReady true');
+  ok(rs.readyForAttachment, 'readyForAttachment true (transcript non-empty)');
+  ok(s.audit.some((a) => a.action === 'PENNY_REVIEW_OVERRIDE_RECORDED'), 'audit PENNY_REVIEW_OVERRIDE_RECORDED');
+});
+
+check('PENNY review note is audited', () => {
+  const s = fresh();
+  const { planId, packageId } = buildPennyPackageFromSegments(s, [WARN_SEG]);
+  recordPennyReviewAction(s, { planId, packageId, actionType: 'ADD_REVIEW_NOTE', note: 'Cross-checked address with caller.', actor: ACTOR });
+  const rs = s.pennyReviewStates.find((r) => r.planId === planId && r.packageId === packageId)!;
+  eq(rs.reviewNotes.length, 1, 'one review note');
+  ok(s.audit.some((a) => a.action === 'PENNY_REVIEW_NOTE_ADDED'), 'audit PENNY_REVIEW_NOTE_ADDED');
+});
+
+check('PENNY failed provider stays blocked (empty transcript) even if overridden', () => {
+  const s = fresh();
+  const assetId = placeholderAudio(s);
+  const plan = createPennyPlan(s, { audioAssetId: assetId, provider: 'LOCAL_PLACEHOLDER', actor: ACTOR });
+  pennyRunAsrToCompletion(s, plan.id, ACTOR);
+  const pkg = evaluateAsrResultForPenny(s, plan.id, ACTOR)!;
+  const blockIssue = pkg.qualityIssues.find((i) => i.severity === 'BLOCKING')!;
+  recordPennyReviewAction(s, { planId: plan.id, packageId: pkg.id, issueId: blockIssue.id, actionType: 'OVERRIDE_BLOCKING', note: 'Override attempt.', actor: ACTOR });
+  const rs = evaluatePennyReviewReadiness(s, plan.id, pkg.id, ACTOR)!;
+  ok(!rs.readyForAttachment, 'not ready — transcript is empty');
+  eq(pennyAttachTranscriptPackage(s, plan.id, ACTOR), undefined, 'attach refused for empty transcript');
+});
+
+check('PENNY reviewed warning package attaches but does not process incident', () => {
+  const s = fresh();
+  const { planId, packageId } = buildPennyPackageFromSegments(s, [WARN_SEG]);
+  const pkg = s.pennyTranscriptPackages.find((p) => p.id === packageId)!;
+  const warnIssue = pkg.qualityIssues.find((i) => i.severity === 'WARNING')!;
+  recordPennyReviewAction(s, { planId, packageId, issueId: warnIssue.id, actionType: 'ACKNOWLEDGE_WARNING', actor: ACTOR });
+  recordPennyReviewAction(s, { planId, packageId, actionType: 'MARK_READY_FOR_ATTACHMENT', actor: ACTOR });
+  const att = pennyAttachTranscriptPackage(s, planId, ACTOR)!;
+  ok(!!att, 'attachment exists');
+  eq(s.incidents.length, 0, 'no incident until processed');
+  const { incidentId } = processAudioTranscriptAttachment(s, att.id, ACTOR);
+  const inc = s.incidents.find((i) => i.id === incidentId)!;
+  eq(inc.natureCode, '3-41', 'natureCode after manual processing');
 });
 
 // =========================================================================

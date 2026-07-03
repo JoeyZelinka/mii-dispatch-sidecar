@@ -10,6 +10,8 @@ import type {
   AuditEvent,
   IncidentContext,
   MockCadPayload,
+  PennyReviewActionType,
+  PennyReviewState,
   PennyTranscriptPackage,
   PennyTranscriptionPlan,
   ReplayState,
@@ -46,12 +48,17 @@ import {
   submitMockCad as engineSubmitMockCad,
 } from './processor';
 import {
+  type PennyQualityGateResult,
   createPennyPlan as engineCreatePennyPlan,
   evaluateAsrResultForPenny as engineEvaluatePenny,
+  evaluatePennyQualityGate as engineEvaluateQualityGate,
+  evaluatePennyReviewReadiness as engineEvaluateReviewReadiness,
+  getOrCreatePennyReviewState as engineGetOrCreateReview,
   pennyAdvanceAsrJob as enginePennyAdvance,
   pennyAttachTranscriptPackage as enginePennyAttach,
   pennyRequestAsrJob as enginePennyRequest,
   pennyRunAsrToCompletion as enginePennyRunToCompletion,
+  recordPennyReviewAction as engineRecordReviewAction,
 } from './penny';
 
 const STORAGE_KEY = 'mii_lite_state_v1';
@@ -72,6 +79,7 @@ function freshState(): MiiState {
     asrJobs: [],
     pennyPlans: [],
     pennyTranscriptPackages: [],
+    pennyReviewStates: [],
   };
 }
 
@@ -97,6 +105,7 @@ function loadState(): MiiState {
     // Forward-compat: older persisted state predates the PENNY slices.
     if (!Array.isArray(parsed.pennyPlans)) parsed.pennyPlans = [];
     if (!Array.isArray(parsed.pennyTranscriptPackages)) parsed.pennyTranscriptPackages = [];
+    if (!Array.isArray(parsed.pennyReviewStates)) parsed.pennyReviewStates = [];
     return parsed;
   } catch {
     return freshState();
@@ -257,6 +266,27 @@ export const miiStore = {
   pennyAttachTranscriptPackage(planId: string): AudioTranscriptAttachment | undefined {
     return update((d) => enginePennyAttach(d, planId, REVIEWER));
   },
+
+  // --- Phase 2F PENNY human review actions ---
+  getOrCreatePennyReviewState(planId: string, packageId: string): PennyReviewState {
+    return update((d) => engineGetOrCreateReview(d, planId, packageId, REVIEWER));
+  },
+  recordPennyReviewAction(input: {
+    planId: string;
+    packageId: string;
+    issueId?: string;
+    actionType: PennyReviewActionType;
+    note?: string;
+  }): PennyReviewState | undefined {
+    return update((d) => engineRecordReviewAction(d, { ...input, actor: REVIEWER }));
+  },
+  evaluatePennyReviewReadiness(planId: string, packageId: string): PennyReviewState | undefined {
+    return update((d) => engineEvaluateReviewReadiness(d, planId, packageId, REVIEWER));
+  },
+  // Read-only transcript-readiness gate — computed against the current snapshot.
+  pennyQualityGate(planId: string, packageId: string): PennyQualityGateResult {
+    return engineEvaluateQualityGate(state, planId, packageId);
+  },
   clearAudioIntake() {
     update((d) => engineClearAudioIntake(d));
   },
@@ -320,6 +350,9 @@ export function usePennyPlans(): PennyTranscriptionPlan[] {
 }
 export function usePennyTranscriptPackages(): PennyTranscriptPackage[] {
   return useStore((s) => s.pennyTranscriptPackages);
+}
+export function usePennyReviewStates(): PennyReviewState[] {
+  return useStore((s) => s.pennyReviewStates);
 }
 
 // Re-export the pure placeholder builder so client components use one source.

@@ -141,7 +141,13 @@ export type AuditAction =
   | 'PENNY_REVIEW_COMPLETED'
   | 'PENNY_TRANSCRIPT_READY'
   | 'PENNY_TRANSCRIPT_NEEDS_REVIEW'
-  | 'PENNY_TRANSCRIPT_ATTACHED';
+  | 'PENNY_TRANSCRIPT_ATTACHED'
+  | 'PENNY_REVIEW_ACTION_RECORDED'
+  | 'PENNY_REVIEW_READY'
+  | 'PENNY_REVIEW_OVERRIDE_RECORDED'
+  | 'PENNY_REVIEW_NOTE_ADDED'
+  | 'PENNY_PACKAGE_MARKED_READY'
+  | 'PENNY_RETRANSCRIPTION_REQUESTED';
 
 export interface AuditEvent {
   id: string;
@@ -438,4 +444,45 @@ export interface PennyTranscriptionPlan {
   attachmentId?: string;
   decisions: PennyDecision[];
   notes?: string;
+}
+
+// --- Phase 2F: PENNY human review + transcript quality gate ---
+// Makes the human-in-the-loop review of a PENNY transcript package explicit and
+// auditable. Warnings require acknowledgement; blocking issues require an
+// explicit override with a note. Review affects attachment readiness only — it
+// never creates incidents or writes CAD.
+
+export type PennyReviewActionType =
+  | 'ACKNOWLEDGE_INFO'
+  | 'ACKNOWLEDGE_WARNING'
+  | 'OVERRIDE_BLOCKING'
+  | 'REQUEST_RETRANSCRIPTION'
+  | 'MARK_REVIEW_READY'
+  | 'MARK_READY_FOR_ATTACHMENT'
+  | 'ADD_REVIEW_NOTE';
+
+export interface PennyReviewAction {
+  id: string;
+  planId: string;
+  packageId: string;
+  issueId?: string;
+  actionType: PennyReviewActionType;
+  actor: string;
+  summary: string;
+  note?: string;
+  createdAt: string;
+}
+
+export interface PennyReviewState {
+  id: string;
+  planId: string;
+  packageId: string;
+  acknowledgedIssueIds: string[];
+  overriddenIssueIds: string[];
+  reviewNotes: string[];
+  reviewReady: boolean;
+  readyForAttachment: boolean;
+  reviewer?: string;
+  updatedAt: string;
+  actions: PennyReviewAction[];
 }

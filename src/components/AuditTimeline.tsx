@@ -32,6 +32,12 @@ const actionColor: Partial<Record<AuditAction, 'default' | 'primary' | 'success'
   PENNY_TRANSCRIPT_READY: 'success',
   PENNY_TRANSCRIPT_NEEDS_REVIEW: 'warning',
   PENNY_TRANSCRIPT_ATTACHED: 'secondary',
+  PENNY_REVIEW_ACTION_RECORDED: 'default',
+  PENNY_REVIEW_READY: 'success',
+  PENNY_REVIEW_OVERRIDE_RECORDED: 'warning',
+  PENNY_REVIEW_NOTE_ADDED: 'info',
+  PENNY_PACKAGE_MARKED_READY: 'success',
+  PENNY_RETRANSCRIPTION_REQUESTED: 'warning',
 };
 
 export default function AuditTimeline({

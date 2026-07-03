@@ -110,8 +110,8 @@ export default function DemoClient() {
         <Link href="/audio" style={{ color: 'inherit' }}>
           Audio Intake
         </Link>{' '}
-        now includes PENNY, a deterministic transcription orchestrator that prepares ASR-shaped
-        transcripts for review and attachment. Real ASR is not enabled.
+        now includes PENNY human review for transcript quality before attachment. Real ASR is not
+        enabled.
       </Typography>
 
       <Alert severity="info" sx={{ mb: 3 }}>

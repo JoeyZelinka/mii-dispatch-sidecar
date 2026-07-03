@@ -18,6 +18,7 @@ import {
   useAsrJobs,
   usePennyPlans,
   usePennyTranscriptPackages,
+  usePennyReviewStates,
 } from '@/lib/mii/store';
 import { IncidentStatusChip, ConfidenceChip } from '@/components/StatusChip';
 import IncidentContextBundleCard from '@/components/IncidentContextBundleCard';
@@ -45,6 +46,7 @@ export default function IncidentDetailClient({ id }: { id: string }) {
   const asrJobs = useAsrJobs();
   const pennyPlans = usePennyPlans();
   const pennyPackages = usePennyTranscriptPackages();
+  const pennyReviewStates = usePennyReviewStates();
   const [toast, setToast] = React.useState<string | null>(null);
 
   if (!incident) {
@@ -119,6 +121,7 @@ export default function IncidentDetailClient({ id }: { id: string }) {
               asrJobs={asrJobs}
               pennyPlans={pennyPlans}
               pennyPackages={pennyPackages}
+              pennyReviewStates={pennyReviewStates}
               incident={incident}
             />
           )}

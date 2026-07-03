@@ -104,8 +104,8 @@ export default function DashboardClient() {
           <Box sx={{ flexGrow: 1, minWidth: 240 }}>
             <Typography variant="h6">Recorded Audio Intake</Typography>
             <Typography variant="body2" color="text.secondary">
-              PENNY transcription orchestration, local audio metadata, mock ASR jobs, and
-              transcript-first processing. No real ASR or external services.
+              PENNY human review, local audio metadata, mock ASR jobs, and transcript-first
+              processing. No real ASR or external services.
             </Typography>
           </Box>
           <Button

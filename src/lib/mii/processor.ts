@@ -51,6 +51,7 @@ export interface MiiState {
   asrJobs: AsrJob[];
   pennyPlans: import('./types').PennyTranscriptionPlan[];
   pennyTranscriptPackages: import('./types').PennyTranscriptPackage[];
+  pennyReviewStates: import('./types').PennyReviewState[];
 }
 
 const SYSTEM_ACTOR = 'MII_lite engine';
@@ -974,6 +975,7 @@ export function clearAudioIntake(draft: MiiState): void {
   draft.asrJobs = [];
   draft.pennyPlans = [];
   draft.pennyTranscriptPackages = [];
+  draft.pennyReviewStates = [];
 }
 
 // --- Phase 2D: derive display-only audio metadata ------------------------
