@@ -1,14 +1,16 @@
 'use client';
 
 import { Card, CardContent, Typography, Box, Chip, Alert } from '@mui/material';
-import type { MockCadPayload } from '@/lib/mii/types';
+import type { MockCadPayload, TranscriptReviewGateStatus } from '@/lib/mii/types';
 
 export default function MockCadPayloadCard({
   payload,
   hasUnconfirmedSensitive = false,
+  transcriptReviewStatus = 'NOT_APPLICABLE',
 }: {
   payload?: MockCadPayload;
   hasUnconfirmedSensitive?: boolean;
+  transcriptReviewStatus?: TranscriptReviewGateStatus;
 }) {
   return (
     <Card sx={{ borderColor: 'warning.main', borderWidth: 1, borderStyle: 'solid' }}>
@@ -22,6 +24,16 @@ export default function MockCadPayloadCard({
         <Alert severity="warning" sx={{ mb: 1.5 }} variant="outlined">
           MOCK CAD PAYLOAD — NOT SENT. No external CAD/agency call is ever made.
         </Alert>
+        {transcriptReviewStatus === 'BLOCKED' && (
+          <Alert severity="error" sx={{ mb: 1.5 }}>
+            Transcript review is blocked. Mock CAD submission should not proceed.
+          </Alert>
+        )}
+        {transcriptReviewStatus === 'WARNING' && (
+          <Alert severity="warning" sx={{ mb: 1.5 }}>
+            Transcript review has unresolved warnings. Payload remains draft-only.
+          </Alert>
+        )}
         {hasUnconfirmedSensitive && (
           <Alert severity="warning" sx={{ mb: 1.5 }}>
             Sensitive fields are present but unconfirmed. They are excluded from this mock payload.

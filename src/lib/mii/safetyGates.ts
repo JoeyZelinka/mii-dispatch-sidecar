@@ -1,4 +1,4 @@
-import type { IncidentContext, SuggestedField } from './types';
+import type { IncidentContext, SuggestedField, TranscriptReviewGateResult } from './types';
 
 // Deterministic, explainable human-in-the-loop safety model. This is the single
 // source of truth shared by SafetyGatesCard and the Submit Mock CAD gating, so
@@ -185,4 +185,40 @@ export function submitBlockReasons(incident: IncidentContext): string[] {
 
 export function canSubmitMockCad(incident: IncidentContext): boolean {
   return submitBlockReasons(incident).length === 0;
+}
+
+// Phase 2G — richer readiness for the Incident Report that folds the (optional)
+// transcript review gate into blocking reasons/warnings WITHOUT changing the
+// base canSubmitMockCad()/submitBlockReasons() used elsewhere. A BLOCKED
+// transcript review blocks submission here; a WARNING is surfaced but does not
+// block (consistent with the non-blocking sensitive-field policy).
+export function evaluateIncidentSafetyReadiness(
+  incident: IncidentContext,
+  transcriptReviewGate?: TranscriptReviewGateResult
+): {
+  gates: SafetyGate[];
+  transcriptReviewGate?: TranscriptReviewGateResult;
+  blockingReasons: string[];
+  warnings: string[];
+  canSubmit: boolean;
+} {
+  const gates = evaluateGates(incident);
+  const blockingReasons = [...submitBlockReasons(incident)];
+  const warnings: string[] = [];
+
+  if (transcriptReviewGate) {
+    if (transcriptReviewGate.status === 'BLOCKED') {
+      blockingReasons.push('Transcript review is blocked');
+    } else if (transcriptReviewGate.status === 'WARNING') {
+      warnings.push('Transcript review has unresolved warning issue(s)');
+    }
+  }
+
+  return {
+    gates,
+    transcriptReviewGate,
+    blockingReasons,
+    warnings,
+    canSubmit: blockingReasons.length === 0,
+  };
 }

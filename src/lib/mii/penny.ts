@@ -638,6 +638,10 @@ export function evaluatePennyReviewReadiness(
     plan.status = 'READY_FOR_ATTACHMENT';
     plan.updatedAt = nowIso();
     pkg.readyForAttachment = true;
+    // Record the human accountability sign-off exactly when the package becomes
+    // ready for attachment through review (not merely on review-state creation).
+    reviewState.signedOffBy = actor;
+    reviewState.signedOffAt = nowIso();
     pennyAudit(
       draft,
       'PENNY_PACKAGE_MARKED_READY',

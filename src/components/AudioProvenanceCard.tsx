@@ -292,6 +292,12 @@ export default function AudioProvenanceCard({
                       Latest review action: {latestReviewAction.summary}
                     </Typography>
                   )}
+                  {pennyReview.signedOffBy && (
+                    <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+                      Signed off by {pennyReview.signedOffBy}
+                      {pennyReview.signedOffAt ? ` · ${formatDateTime(pennyReview.signedOffAt)}` : ''}
+                    </Typography>
+                  )}
                   <Typography variant="caption" color="text.secondary">
                     PENNY review affected transcript attachment readiness only. The MII pipeline
                     created incident context after attachment.

@@ -6,7 +6,13 @@ import WarningAmberIcon from '@mui/icons-material/WarningAmber';
 import BlockIcon from '@mui/icons-material/Block';
 import RadioButtonUncheckedIcon from '@mui/icons-material/RadioButtonUnchecked';
 import ShieldIcon from '@mui/icons-material/Shield';
-import type { IncidentContext, MockCadPayload, Unit } from '@/lib/mii/types';
+import type {
+  IncidentContext,
+  MockCadPayload,
+  TranscriptReviewGateResult,
+  TranscriptReviewGateStatus,
+  Unit,
+} from '@/lib/mii/types';
 import {
   evaluateGates,
   requiresUnit,
@@ -15,6 +21,7 @@ import {
   canSubmitMockCad,
   type GateStatus,
 } from '@/lib/mii/safetyGates';
+import { formatDateTime } from '@/lib/format';
 
 const statusVisual: Record<
   GateStatus,
@@ -103,13 +110,29 @@ function buildChecklist(
   ];
 }
 
+const transcriptGateVisual: Record<
+  TranscriptReviewGateStatus,
+  { color: 'success' | 'warning' | 'error' | 'default'; icon: React.ReactNode; label: string }
+> = {
+  PASS: { color: 'success', icon: <CheckCircleIcon fontSize="small" />, label: 'PASS' },
+  WARNING: { color: 'warning', icon: <WarningAmberIcon fontSize="small" />, label: 'WARNING' },
+  BLOCKED: { color: 'error', icon: <BlockIcon fontSize="small" />, label: 'BLOCKED' },
+  NOT_APPLICABLE: {
+    color: 'default',
+    icon: <RadioButtonUncheckedIcon fontSize="small" />,
+    label: 'N/A',
+  },
+};
+
 export default function SafetyGatesCard({
   incident,
   payload,
+  transcriptReviewGate,
 }: {
   incident: IncidentContext;
   units?: Unit[];
   payload?: MockCadPayload;
+  transcriptReviewGate?: TranscriptReviewGateResult;
 }) {
   const gates = evaluateGates(incident);
   const checklist = buildChecklist(incident, payload);
@@ -149,6 +172,60 @@ export default function SafetyGatesCard({
             </Box>
           );
         })}
+
+        {transcriptReviewGate && (
+          <>
+            <Divider sx={{ my: 1 }} />
+            {(() => {
+              const tv = transcriptGateVisual[transcriptReviewGate.status];
+              return (
+                <Box>
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
+                    <Chip
+                      size="small"
+                      color={tv.color}
+                      icon={tv.icon as React.ReactElement}
+                      label={tv.label}
+                    />
+                    <Typography variant="subtitle2" sx={{ flexGrow: 1 }}>
+                      Transcript Review
+                    </Typography>
+                    <Chip
+                      size="small"
+                      variant="outlined"
+                      color={transcriptReviewGate.status === 'BLOCKED' ? undefined : 'info'}
+                      label={transcriptReviewGate.status === 'BLOCKED' ? 'Blocking' : 'Advisory'}
+                    />
+                  </Box>
+                  <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.25 }}>
+                    {transcriptReviewGate.summary}
+                  </Typography>
+                  {transcriptReviewGate.status !== 'NOT_APPLICABLE' && (
+                    <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5, mt: 0.5 }}>
+                      <Chip size="small" variant="outlined" label={`${transcriptReviewGate.blockingCount} blocking`} />
+                      <Chip size="small" variant="outlined" label={`${transcriptReviewGate.warningCount} warnings`} />
+                      <Chip size="small" variant="outlined" label={`${transcriptReviewGate.infoCount} info`} />
+                      <Chip size="small" variant="outlined" label={`${transcriptReviewGate.unresolvedWarningCount} unresolved warn`} />
+                      <Chip size="small" variant="outlined" label={`${transcriptReviewGate.unresolvedBlockingCount} unresolved block`} />
+                    </Box>
+                  )}
+                  {transcriptReviewGate.latestReviewer && (
+                    <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.25 }}>
+                      Reviewer: {transcriptReviewGate.latestReviewer}
+                      {transcriptReviewGate.latestReviewAt
+                        ? ` · Reviewed: ${formatDateTime(transcriptReviewGate.latestReviewAt)}`
+                        : ''}
+                    </Typography>
+                  )}
+                  <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.25, fontStyle: 'italic' }}>
+                    Transcript review affects readiness visibility; MII incident extraction still
+                    comes from the attached transcript.
+                  </Typography>
+                </Box>
+              );
+            })()}
+          </>
+        )}
 
         <Divider sx={{ my: 1.5 }} />
         <Typography variant="overline" color="text.secondary">

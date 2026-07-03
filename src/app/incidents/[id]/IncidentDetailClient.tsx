@@ -31,7 +31,7 @@ import MockCadPayloadCard from '@/components/MockCadPayloadCard';
 import SafetyGatesCard from '@/components/SafetyGatesCard';
 import ConflictResolutionCard from '@/components/ConflictResolutionCard';
 import AudioProvenanceCard from '@/components/AudioProvenanceCard';
-import { submitBlockReasons, hasUnconfirmedSensitive } from '@/lib/mii/safetyGates';
+import { hasUnconfirmedSensitive, evaluateIncidentSafetyReadiness } from '@/lib/mii/safetyGates';
 
 export default function IncidentDetailClient({ id }: { id: string }) {
   const incident = useIncident(id);
@@ -67,9 +67,13 @@ export default function IncidentDetailClient({ id }: { id: string }) {
   const incidentAudit = audit.filter((e) => e.incidentId === id);
   const linkedAudio = audioAttachments.filter((a) => a.activeIncidentId === id);
   const unconfirmedSensitive = hasUnconfirmedSensitive(incident);
-  const blockReasons = submitBlockReasons(incident);
+  // Phase 2G — fold the transcript review gate into Incident Report readiness.
+  const transcriptReviewGate = miiStore.transcriptReviewGate(id);
+  const readiness = evaluateIncidentSafetyReadiness(incident, transcriptReviewGate);
+  const blockReasons = readiness.blockingReasons;
 
   const handleSubmitCad = () => {
+    if (!readiness.canSubmit) return;
     miiStore.submitMockCad(id, { includeSensitive: true });
     setToast('MOCK CAD payload built (NOT SENT). No external system was contacted.');
   };
@@ -137,17 +141,27 @@ export default function IncidentDetailClient({ id }: { id: string }) {
             units={units}
             onAssign={(unitId) => miiStore.assignUnit(id, unitId)}
           />
-          <SafetyGatesCard incident={incident} units={units} payload={payload} />
+          <SafetyGatesCard
+            incident={incident}
+            units={units}
+            payload={payload}
+            transcriptReviewGate={transcriptReviewGate}
+          />
           <HumanReviewActions
             incident={incident}
             blockReasons={blockReasons}
             hasUnconfirmedSensitive={unconfirmedSensitive}
+            warnings={readiness.warnings}
             onConfirmAsr={() => miiStore.confirmAsr(id)}
             onApplyFields={() => miiStore.applySuggestedFields(id)}
             onSubmitCad={handleSubmitCad}
             onClose={() => miiStore.closeIncident(id)}
           />
-          <MockCadPayloadCard payload={payload} hasUnconfirmedSensitive={unconfirmedSensitive} />
+          <MockCadPayloadCard
+            payload={payload}
+            hasUnconfirmedSensitive={unconfirmedSensitive}
+            transcriptReviewStatus={transcriptReviewGate.status}
+          />
         </Box>
       </Box>
 

@@ -12,6 +12,7 @@ export default function HumanReviewActions({
   incident,
   blockReasons,
   hasUnconfirmedSensitive,
+  warnings = [],
   onConfirmAsr,
   onApplyFields,
   onSubmitCad,
@@ -20,6 +21,7 @@ export default function HumanReviewActions({
   incident: IncidentContext;
   blockReasons: string[];
   hasUnconfirmedSensitive: boolean;
+  warnings?: string[];
   onConfirmAsr: () => void;
   onApplyFields: () => void;
   onSubmitCad: () => void;
@@ -97,6 +99,18 @@ export default function HumanReviewActions({
               All blocking safety gates pass. Submitting builds a <b>mock</b> CAD payload only — it is
               never sent to any external system.
             </Typography>
+          </Alert>
+        )}
+
+        {warnings.length > 0 && (
+          <Alert severity="warning" sx={{ mt: 2 }}>
+            <Box component="ul" sx={{ m: 0, pl: 2 }}>
+              {warnings.map((w) => (
+                <li key={w}>
+                  <Typography variant="body2">{w}</Typography>
+                </li>
+              ))}
+            </Box>
           </Alert>
         )}
 

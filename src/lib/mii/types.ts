@@ -485,4 +485,37 @@ export interface PennyReviewState {
   reviewer?: string;
   updatedAt: string;
   actions: PennyReviewAction[];
+  // Human accountability trail: set once the package becomes ready for
+  // attachment through review readiness evaluation.
+  signedOffBy?: string;
+  signedOffAt?: string;
+}
+
+// --- Phase 2G: transcript review safety gate ---
+// A read-only readiness/provenance gate that surfaces PENNY transcript review
+// status on the incident. NOT_APPLICABLE for incidents not created from a
+// PENNY-reviewed transcript package (legacy/manual/direct scenario paths).
+
+export type TranscriptReviewGateStatus =
+  | 'NOT_APPLICABLE'
+  | 'PASS'
+  | 'WARNING'
+  | 'BLOCKED';
+
+export interface TranscriptReviewGateResult {
+  status: TranscriptReviewGateStatus;
+  label: string;
+  summary: string;
+  linkedPlanId?: string;
+  linkedPackageId?: string;
+  linkedReviewStateId?: string;
+  reviewReady?: boolean;
+  readyForAttachment?: boolean;
+  blockingCount: number;
+  warningCount: number;
+  infoCount: number;
+  unresolvedWarningCount: number;
+  unresolvedBlockingCount: number;
+  latestReviewer?: string;
+  latestReviewAt?: string;
 }

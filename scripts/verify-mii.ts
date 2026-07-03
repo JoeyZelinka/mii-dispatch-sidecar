@@ -35,7 +35,13 @@ import {
 } from '@/lib/mii/processor';
 import { SEED_UNITS } from '@/lib/mii/seed';
 import { buildMockCadPayload } from '@/lib/mii/mockCad';
-import { submitBlockReasons, canSubmitMockCad, hasUnconfirmedSensitive } from '@/lib/mii/safetyGates';
+import {
+  submitBlockReasons,
+  canSubmitMockCad,
+  hasUnconfirmedSensitive,
+  evaluateIncidentSafetyReadiness,
+} from '@/lib/mii/safetyGates';
+import { evaluateTranscriptReviewGateForIncident } from '@/lib/mii/transcriptReviewGate';
 import {
   createDeterministicWaveform,
   estimateDurationFromSegments,
@@ -1014,6 +1020,98 @@ check('PENNY reviewed warning package attaches but does not process incident', (
   const { incidentId } = processAudioTranscriptAttachment(s, att.id, ACTOR);
   const inc = s.incidents.find((i) => i.id === incidentId)!;
   eq(inc.natureCode, '3-41', 'natureCode after manual processing');
+});
+
+// =========================================================================
+// Phase 2G — transcript review safety gate
+// =========================================================================
+
+check('Transcript review gate NOT_APPLICABLE for non-PENNY incident', () => {
+  const { s, incident } = runInstant('medical-3-41');
+  const gate = evaluateTranscriptReviewGateForIncident(s, incident!.id);
+  eq(gate.status, 'NOT_APPLICABLE', 'status NOT_APPLICABLE');
+});
+
+check('Transcript review gate PASS for clean PENNY Medical', () => {
+  const s = fresh();
+  const assetId = placeholderAudio(s);
+  const plan = createPennyPlan(s, { audioAssetId: assetId, provider: 'MOCK_SCENARIO', scenarioId: 'medical-3-41', actor: ACTOR });
+  pennyRunAsrToCompletion(s, plan.id, ACTOR);
+  evaluateAsrResultForPenny(s, plan.id, ACTOR);
+  const att = pennyAttachTranscriptPackage(s, plan.id, ACTOR)!;
+  processAudioTranscriptAttachment(s, att.id, ACTOR);
+  const p = s.pennyPlans.find((x) => x.id === plan.id)!;
+  const incidentId = s.audioTranscriptAttachments.find((a) => a.id === att.id)!.activeIncidentId!;
+  const gate = evaluateTranscriptReviewGateForIncident(s, incidentId);
+  eq(gate.status, 'PASS', 'status PASS');
+  eq(gate.linkedPlanId, p.id, 'linkedPlanId');
+  eq(gate.linkedPackageId, p.transcriptPackageId, 'linkedPackageId');
+  ok(Boolean(gate.readyForAttachment), 'readyForAttachment true');
+});
+
+check('Transcript review gate WARNING for unresolved warning package', () => {
+  const s = fresh();
+  const { planId } = buildPennyPackageFromSegments(s, [WARN_SEG]);
+  // No review state → Phase 2E fallback allows attach of a warning package.
+  const att = pennyAttachTranscriptPackage(s, planId, ACTOR)!;
+  ok(!!att, 'attached via fallback');
+  processAudioTranscriptAttachment(s, att.id, ACTOR);
+  const incidentId = s.audioTranscriptAttachments.find((a) => a.id === att.id)!.activeIncidentId!;
+  const gate = evaluateTranscriptReviewGateForIncident(s, incidentId);
+  eq(gate.status, 'WARNING', 'status WARNING');
+  ok(gate.unresolvedWarningCount > 0, 'unresolvedWarningCount > 0');
+  const incident = s.incidents.find((i) => i.id === incidentId)!;
+  const readiness = evaluateIncidentSafetyReadiness(incident, gate);
+  ok(readiness.warnings.length > 0, 'readiness surfaces warning');
+  ok(!readiness.blockingReasons.includes('Transcript review is blocked'), 'warning does not block');
+});
+
+check('Transcript review gate BLOCKED for unresolved blocking package', () => {
+  const s = fresh();
+  const { planId } = buildPennyPackageFromSegments(s, [BLOCK_SEG]);
+  const plan = s.pennyPlans.find((x) => x.id === planId)!;
+  const pkg = s.pennyTranscriptPackages.find((p) => p.id === plan.transcriptPackageId)!;
+  // Construct a linked-but-blocked incident directly (normal attach would refuse).
+  const att = attachTranscriptToAudio(s, plan.audioAssetId, pkg.normalizedTranscriptText, 'medical-3-41');
+  plan.attachmentId = att.id;
+  processAudioTranscriptAttachment(s, att.id, ACTOR);
+  const incidentId = s.audioTranscriptAttachments.find((a) => a.id === att.id)!.activeIncidentId!;
+  const gate = evaluateTranscriptReviewGateForIncident(s, incidentId);
+  eq(gate.status, 'BLOCKED', 'status BLOCKED');
+  ok(gate.unresolvedBlockingCount > 0, 'unresolvedBlockingCount > 0');
+  const incident = s.incidents.find((i) => i.id === incidentId)!;
+  const readiness = evaluateIncidentSafetyReadiness(incident, gate);
+  ok(!readiness.canSubmit, 'canSubmit false');
+  ok(readiness.blockingReasons.includes('Transcript review is blocked'), 'includes transcript block reason');
+});
+
+check('Transcript review gate PASS after warning acknowledged (+ sign-off)', () => {
+  const s = fresh();
+  const { planId, packageId } = buildPennyPackageFromSegments(s, [WARN_SEG]);
+  const pkg = s.pennyTranscriptPackages.find((p) => p.id === packageId)!;
+  const warnIssue = pkg.qualityIssues.find((i) => i.severity === 'WARNING')!;
+  recordPennyReviewAction(s, { planId, packageId, issueId: warnIssue.id, actionType: 'ACKNOWLEDGE_WARNING', actor: ACTOR });
+  evaluatePennyReviewReadiness(s, planId, packageId, ACTOR);
+  const att = pennyAttachTranscriptPackage(s, planId, ACTOR)!;
+  ok(!!att, 'attached after review');
+  processAudioTranscriptAttachment(s, att.id, ACTOR);
+  const incidentId = s.audioTranscriptAttachments.find((a) => a.id === att.id)!.activeIncidentId!;
+  const gate = evaluateTranscriptReviewGateForIncident(s, incidentId);
+  eq(gate.status, 'PASS', 'status PASS');
+  ok(!!gate.latestReviewer, 'latestReviewer present');
+  ok(!!gate.latestReviewAt, 'latestReviewAt present');
+});
+
+check('Transcript review sign-off is recorded on readiness', () => {
+  const s = fresh();
+  const assetId = placeholderAudio(s);
+  const plan = createPennyPlan(s, { audioAssetId: assetId, provider: 'MOCK_SCENARIO', scenarioId: 'medical-3-41', actor: ACTOR });
+  pennyRunAsrToCompletion(s, plan.id, ACTOR);
+  const pkg = evaluateAsrResultForPenny(s, plan.id, ACTOR)!;
+  const rs = evaluatePennyReviewReadiness(s, plan.id, pkg.id, ACTOR)!;
+  ok(rs.readyForAttachment, 'readyForAttachment true');
+  ok(!!rs.signedOffBy, 'signedOffBy set');
+  ok(!!rs.signedOffAt, 'signedOffAt set');
 });
 
 // =========================================================================

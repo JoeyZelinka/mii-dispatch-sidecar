@@ -15,6 +15,7 @@ import type {
   PennyTranscriptPackage,
   PennyTranscriptionPlan,
   ReplayState,
+  TranscriptReviewGateResult,
   TranscriptLine,
   Unit,
   UnitRecommendation,
@@ -60,6 +61,7 @@ import {
   pennyRunAsrToCompletion as enginePennyRunToCompletion,
   recordPennyReviewAction as engineRecordReviewAction,
 } from './penny';
+import { evaluateTranscriptReviewGateForIncident as engineTranscriptReviewGate } from './transcriptReviewGate';
 
 const STORAGE_KEY = 'mii_lite_state_v1';
 const REVIEWER = 'Dispatcher (you)';
@@ -286,6 +288,10 @@ export const miiStore = {
   // Read-only transcript-readiness gate — computed against the current snapshot.
   pennyQualityGate(planId: string, packageId: string): PennyQualityGateResult {
     return engineEvaluateQualityGate(state, planId, packageId);
+  },
+  // Read-only transcript review safety gate for an incident.
+  transcriptReviewGate(incidentId: string): TranscriptReviewGateResult {
+    return engineTranscriptReviewGate(state, incidentId);
   },
   clearAudioIntake() {
     update((d) => engineClearAudioIntake(d));
