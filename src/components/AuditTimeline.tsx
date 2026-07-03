@@ -18,6 +18,13 @@ const actionColor: Partial<Record<AuditAction, 'default' | 'primary' | 'success'
   FIELD_REJECTED: 'warning',
   CONFLICT_RAISED: 'error',
   CONFLICT_RESOLVED: 'success',
+  AUDIO_TRANSCRIPT_PROCESSED: 'secondary',
+  ASR_TRANSCRIPT_GENERATED: 'info',
+  ASR_TRANSCRIPT_ATTACHED: 'secondary',
+  ASR_JOB_REQUESTED: 'primary',
+  ASR_JOB_COMPLETED: 'success',
+  ASR_JOB_FAILED: 'error',
+  ASR_JOB_CANCELLED: 'warning',
 };
 
 export default function AuditTimeline({

@@ -127,7 +127,14 @@ export type AuditAction =
   | 'MOCK_CAD_SUBMITTED'
   | 'FIELD_REJECTED'
   | 'CONFLICT_RAISED'
-  | 'CONFLICT_RESOLVED';
+  | 'CONFLICT_RESOLVED'
+  | 'AUDIO_TRANSCRIPT_PROCESSED'
+  | 'ASR_TRANSCRIPT_GENERATED'
+  | 'ASR_TRANSCRIPT_ATTACHED'
+  | 'ASR_JOB_REQUESTED'
+  | 'ASR_JOB_COMPLETED'
+  | 'ASR_JOB_FAILED'
+  | 'ASR_JOB_CANCELLED';
 
 export interface AuditEvent {
   id: string;
@@ -190,4 +197,129 @@ export interface Scenario {
   blurb: string;
   expectedSemantic: SemanticType;
   lines: SeedTranscriptLine[];
+}
+
+// --- Phase 2A: Recorded audio intake (simulated/local only) ---
+// Audio artifacts are a landing zone for transcript-first processing. No ASR,
+// no uploads, no external systems. objectUrl (if any) is a session-local
+// blob URL used for in-browser preview only; it does not survive reload.
+
+export type AudioSourceType =
+  | 'SIMULATED_UPLOAD'
+  | 'AUTHORIZED_RECORDING'
+  | 'SYNTHETIC_TTS'
+  | 'MANUAL_PLACEHOLDER';
+
+export interface AudioAsset {
+  id: string;
+  filename: string;
+  sourceType: AudioSourceType;
+  mimeType: string;
+  sizeBytes: number;
+  durationSeconds?: number;
+  objectUrl?: string;
+  createdAt: string;
+  notes?: string;
+  status: 'UPLOADED' | 'TRANSCRIPT_ATTACHED' | 'PROCESSED';
+}
+
+export interface AudioTranscriptAttachment {
+  id: string;
+  audioAssetId: string;
+  scenarioId?: string;
+  transcriptText: string;
+  createdAt: string;
+  processedAt?: string;
+  activeIncidentId?: string;
+  transcriptLineIds: string[];
+  // Set when the attachment originated from a mock ASR transcript result.
+  asrResultId?: string;
+}
+
+// --- Phase 2B: ASR adapter shell (mock/local only) ---
+// A landing zone for a future real ASR adapter. Phase 2B ships a deterministic
+// mock adapter only — no audio content is ever transcribed, no network is used.
+
+export type AsrProvider =
+  | 'MOCK_SCENARIO'
+  | 'MOCK_FREEFORM'
+  | 'LOCAL_PLACEHOLDER'
+  | 'UNCONFIGURED';
+
+export type AsrStatus =
+  | 'NOT_REQUESTED'
+  | 'QUEUED'
+  | 'TRANSCRIBING'
+  | 'COMPLETED'
+  | 'FAILED';
+
+export interface AsrSegment {
+  id: string;
+  speaker: string;
+  text: string;
+  startMs?: number;
+  endMs?: number;
+  confidence: number;
+}
+
+export interface AsrTranscriptResult {
+  id: string;
+  audioAssetId: string;
+  provider: AsrProvider;
+  status: AsrStatus;
+  transcriptText: string;
+  segments: AsrSegment[];
+  createdAt: string;
+  completedAt?: string;
+  error?: string;
+  scenarioId?: string;
+  notes?: string;
+}
+
+// --- Phase 2C: async ASR job lifecycle (mock/local only) ---
+// Models the request → queued → transcribing → completed/failed lifecycle a real
+// async ASR provider would have, driven deterministically one step at a time.
+// No real transcription, no network, no uploads.
+
+export type AsrJobStatus =
+  | 'REQUESTED'
+  | 'QUEUED'
+  | 'TRANSCRIBING'
+  | 'COMPLETED'
+  | 'FAILED'
+  | 'CANCELLED';
+
+export type AsrJobStep =
+  | 'VALIDATE_AUDIO_ASSET'
+  | 'SELECT_PROVIDER'
+  | 'PREPARE_TRANSCRIPTION'
+  | 'TRANSCRIBE'
+  | 'NORMALIZE_SEGMENTS'
+  | 'COMPLETE';
+
+export interface AsrJobEvent {
+  id: string;
+  jobId: string;
+  status: AsrJobStatus;
+  step?: AsrJobStep;
+  summary: string;
+  createdAt: string;
+}
+
+export interface AsrJob {
+  id: string;
+  audioAssetId: string;
+  provider: AsrProvider;
+  status: AsrJobStatus;
+  requestedAt: string;
+  queuedAt?: string;
+  startedAt?: string;
+  completedAt?: string;
+  failedAt?: string;
+  cancelledAt?: string;
+  resultId?: string;
+  scenarioId?: string;
+  freeformTranscriptText?: string;
+  error?: string;
+  events: AsrJobEvent[];
 }

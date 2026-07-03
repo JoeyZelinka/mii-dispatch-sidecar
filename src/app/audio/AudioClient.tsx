@@ -1,0 +1,822 @@
+'use client';
+
+import * as React from 'react';
+import {
+  Box,
+  Card,
+  CardContent,
+  Typography,
+  Button,
+  Alert,
+  AlertTitle,
+  TextField,
+  MenuItem,
+  Chip,
+  Divider,
+  Snackbar,
+  Stack,
+} from '@mui/material';
+import Link from 'next/link';
+import UploadFileIcon from '@mui/icons-material/UploadFile';
+import NoteAddIcon from '@mui/icons-material/NoteAdd';
+import LinkIcon from '@mui/icons-material/Link';
+import PlayForWorkIcon from '@mui/icons-material/PlayForWork';
+import GraphicEqIcon from '@mui/icons-material/GraphicEq';
+import ClearIcon from '@mui/icons-material/Clear';
+import OpenInNewIcon from '@mui/icons-material/OpenInNew';
+import PageHeader from '@/components/PageHeader';
+import AudioAssetCard, { formatBytes } from '@/components/AudioAssetCard';
+import AsrResultCard from '@/components/AsrResultCard';
+import AsrJobCard from '@/components/AsrJobCard';
+import {
+  miiStore,
+  useAudioAssets,
+  useAudioTranscriptAttachments,
+  useAsrTranscriptResults,
+  useAsrJobs,
+  useIncidents,
+} from '@/lib/mii/store';
+import { SCENARIOS } from '@/lib/mii/seed';
+import { ASR_PROVIDER_REGISTRY, getAsrProviderDefinition } from '@/lib/mii/asr/providerRegistry';
+import type { AsrProvider, AudioSourceType } from '@/lib/mii/types';
+
+const SOURCE_OPTIONS: { value: AudioSourceType; label: string }[] = [
+  { value: 'SIMULATED_UPLOAD', label: 'Simulated Upload' },
+  { value: 'AUTHORIZED_RECORDING', label: 'Authorized Recording' },
+  { value: 'SYNTHETIC_TTS', label: 'Synthetic TTS' },
+  { value: 'MANUAL_PLACEHOLDER', label: 'Manual Placeholder' },
+];
+
+// Scenario picker labels, mapped to the seeded scenario ids.
+const SCENARIO_OPTIONS: { id: string; label: string }[] = [
+  { id: 'medical-3-41', label: 'Medical 3-41' },
+  { id: 'traffic-19', label: 'Traffic Stop 19' },
+  { id: 'conflict-address', label: 'Address Conflict' },
+  { id: 'admin-chatter', label: 'Admin Chatter' },
+];
+
+const ACCEPT = '.wav,.mp3,.m4a,.aac,.ogg,audio/*';
+
+function seededTranscriptText(scenarioId: string): string {
+  const scenario = SCENARIOS.find((s) => s.id === scenarioId);
+  if (!scenario) return '';
+  return scenario.lines.map((l) => `${l.speaker}: ${l.text}`).join('\n');
+}
+
+export default function AudioClient() {
+  const assets = useAudioAssets();
+  const attachments = useAudioTranscriptAttachments();
+  const asrResults = useAsrTranscriptResults();
+  const asrJobs = useAsrJobs();
+  const incidents = useIncidents();
+
+  const [sourceType, setSourceType] = React.useState<AudioSourceType>('SIMULATED_UPLOAD');
+  const [notes, setNotes] = React.useState('');
+  const [filePreview, setFilePreview] = React.useState<{ file: File; objectUrl: string } | null>(
+    null
+  );
+
+  const [activeAssetId, setActiveAssetId] = React.useState<string | undefined>();
+  const [transcriptText, setTranscriptText] = React.useState('');
+  const [attachScenarioId, setAttachScenarioId] = React.useState<string | undefined>();
+  const [scenarioChoice, setScenarioChoice] = React.useState('medical-3-41');
+  const [activeAttachmentId, setActiveAttachmentId] = React.useState<string | undefined>();
+
+  // Optional ASR job shell state (Phase 2C).
+  const [asrProvider, setAsrProvider] = React.useState<AsrProvider>('MOCK_SCENARIO');
+  const [asrScenarioChoice, setAsrScenarioChoice] = React.useState('medical-3-41');
+  const [asrFreeformText, setAsrFreeformText] = React.useState('');
+  const [activeJobId, setActiveJobId] = React.useState<string | undefined>();
+
+  const [toast, setToast] = React.useState<string | null>(null);
+
+  // Blob URLs are session-local and not durable. They are used only for local
+  // preview in Phase 2A. This ref tracks the one *unclaimed* preview URL (shown
+  // in Step 2 before it is turned into an asset) so we can revoke it on replace,
+  // clear, or unmount. Once a URL is handed to an asset its ownership transfers
+  // and we stop tracking it here (we do not revoke persisted asset URLs).
+  const previewUrlRef = React.useRef<string | null>(null);
+
+  React.useEffect(() => {
+    return () => {
+      if (previewUrlRef.current) URL.revokeObjectURL(previewUrlRef.current);
+    };
+  }, []);
+
+  const activeAsset = assets.find((a) => a.id === activeAssetId);
+  const activeAttachment = attachments.find((a) => a.id === activeAttachmentId);
+  const activeJob = asrJobs.find((j) => j.id === activeJobId);
+  const providerDef = getAsrProviderDefinition(asrProvider);
+  const jobIsTerminal =
+    activeJob != null && ['COMPLETED', 'FAILED', 'CANCELLED'].includes(activeJob.status);
+  const activeJobResult =
+    activeJob?.status === 'COMPLETED' && activeJob.resultId
+      ? asrResults.find((r) => r.id === activeJob.resultId)
+      : undefined;
+
+  const eventNumberFor = (incidentId?: string) =>
+    incidents.find((i) => i.id === incidentId)?.eventNumber;
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0];
+    if (!f) return;
+    // Revoke the previous unclaimed preview before creating a new one.
+    if (previewUrlRef.current) URL.revokeObjectURL(previewUrlRef.current);
+    // Local, session-only preview URL. The file itself is never uploaded.
+    const objectUrl = URL.createObjectURL(f);
+    previewUrlRef.current = objectUrl;
+    setFilePreview({ file: f, objectUrl });
+  };
+
+  const createAssetFromFile = () => {
+    if (!filePreview) return;
+    const { file, objectUrl } = filePreview;
+    const asset = miiStore.addAudioAsset({
+      filename: file.name,
+      sourceType,
+      mimeType: file.type || 'application/octet-stream',
+      sizeBytes: file.size,
+      objectUrl,
+      notes: notes.trim() || undefined,
+    });
+    setActiveAssetId(asset.id);
+    setActiveAttachmentId(undefined);
+    // Ownership of the blob URL transfers to the asset; stop tracking it here so
+    // unmount/clear won't revoke the URL the asset card now renders.
+    previewUrlRef.current = null;
+    setFilePreview(null);
+    setToast(`Audio asset created: ${asset.filename}`);
+  };
+
+  const createPlaceholder = () => {
+    const asset = miiStore.addAudioAsset({
+      filename: 'simulated-radio-clip.wav',
+      sourceType: 'MANUAL_PLACEHOLDER',
+      mimeType: 'audio/wav',
+      sizeBytes: 0,
+      notes: notes.trim() || 'Placeholder audio artifact for transcript-first processing.',
+    });
+    setActiveAssetId(asset.id);
+    setActiveAttachmentId(undefined);
+    setToast('Manual placeholder audio asset created.');
+  };
+
+  const useSeededTranscript = () => {
+    setTranscriptText(seededTranscriptText(scenarioChoice));
+    setAttachScenarioId(scenarioChoice);
+  };
+
+  const requestJob = () => {
+    if (!activeAssetId) return;
+    const job = miiStore.requestAsrJob(activeAssetId, {
+      provider: asrProvider,
+      scenarioId: providerDef.supportsScenario ? asrScenarioChoice : undefined,
+      freeformTranscriptText: providerDef.supportsFreeform ? asrFreeformText : undefined,
+    });
+    setActiveJobId(job.id);
+    setToast(`ASR job requested (${providerDef.label}).`);
+  };
+
+  const advanceJob = () => {
+    if (!activeJobId) return;
+    const job = miiStore.advanceAsrJob(activeJobId);
+    if (job) setToast(`ASR job → ${job.status}.`);
+  };
+
+  const runJobToCompletion = () => {
+    if (!activeJobId) return;
+    const job = miiStore.runAsrJobToCompletion(activeJobId);
+    if (job) {
+      setToast(
+        job.status === 'COMPLETED'
+          ? `ASR job completed (${job.events.length} lifecycle events).`
+          : `ASR job ${job.status}${job.error ? `: ${job.error}` : ''}.`
+      );
+    }
+  };
+
+  const cancelJob = () => {
+    if (!activeJobId) return;
+    const job = miiStore.cancelAsrJob(activeJobId);
+    if (job) setToast(`ASR job → ${job.status}.`);
+  };
+
+  const attachAsr = (asrResultId: string) => {
+    const attachment = miiStore.attachAsrResultToAudio(asrResultId);
+    if (!attachment) return;
+    setActiveAttachmentId(attachment.id);
+    // Mirror the attached transcript into the manual flow view for continuity.
+    setTranscriptText(attachment.transcriptText);
+    setAttachScenarioId(attachment.scenarioId);
+    setToast('ASR transcript attached — ready to process in Step 4.');
+  };
+
+  const attachTranscript = () => {
+    if (!activeAssetId || !transcriptText.trim()) return;
+    const attachment = miiStore.attachTranscriptToAudio(
+      activeAssetId,
+      transcriptText,
+      attachScenarioId
+    );
+    setActiveAttachmentId(attachment.id);
+    setToast('Transcript attached to audio asset.');
+  };
+
+  const processAttachment = () => {
+    if (!activeAttachmentId) return;
+    const { incidentId } = miiStore.processAudioTranscriptAttachment(activeAttachmentId);
+    setToast(
+      incidentId
+        ? `Processed — incident ${eventNumberFor(incidentId) ?? incidentId} created/updated.`
+        : 'Processed — no incident created (admin chatter or no incident-defining facts).'
+    );
+  };
+
+  const clearAll = () => {
+    if (!window.confirm('Clear all audio assets and transcript attachments?')) return;
+    // Revoke any live, unclaimed preview URL held by this component.
+    if (previewUrlRef.current) {
+      URL.revokeObjectURL(previewUrlRef.current);
+      previewUrlRef.current = null;
+    }
+    miiStore.clearAudioIntake();
+    setActiveAssetId(undefined);
+    setActiveAttachmentId(undefined);
+    setActiveJobId(undefined);
+    setTranscriptText('');
+    setAttachScenarioId(undefined);
+    setFilePreview(null);
+  };
+
+  const recentAssets = [...assets].reverse();
+  const recentAttachments = [...attachments].reverse();
+  const recentAsrResults = [...asrResults].reverse();
+  const recentAsrJobs = [...asrJobs].reverse().slice(0, 4);
+  const isAsrAttached = (asrResultId: string) =>
+    attachments.some((a) => a.asrResultId === asrResultId);
+
+  return (
+    <Box>
+      <PageHeader
+        title="Recorded Audio Intake"
+        subtitle="Phase 2A shell for attaching simulated or authorized recorded audio to transcript-first incident processing."
+      />
+
+      <Alert severity="warning" sx={{ mb: 2 }}>
+        Simulated / Authorized Audio Only — no live radio, no real CAD, no agency systems, and no
+        external APIs.
+      </Alert>
+
+      <Alert severity="info" sx={{ mb: 2 }}>
+        <AlertTitle>Phase 2A limitations</AlertTitle>
+        <Box component="ul" sx={{ m: 0, pl: 2.5 }}>
+          <li>Phase 2A does not transcribe audio automatically.</li>
+          <li>The uploaded file is used only as a local browser preview and provenance artifact.</li>
+          <li>The transcript text is what drives the MII pipeline in this phase.</li>
+          <li>No audio file is uploaded to any service.</li>
+          <li>Blob preview URLs are session-local and may disappear after refresh.</li>
+        </Box>
+      </Alert>
+
+      <Card variant="outlined" sx={{ mb: 3, borderColor: 'primary.main' }}>
+        <CardContent sx={{ py: 1.5 }}>
+          <Typography variant="subtitle2" sx={{ mb: 0.5 }}>
+            Phase 2A Flow
+          </Typography>
+          <Box component="ol" sx={{ m: 0, pl: 2.5 }}>
+            <li>
+              <Typography variant="body2" color="text.secondary">
+                Create or select a simulated/authorized audio artifact.
+              </Typography>
+            </li>
+            <li>
+              <Typography variant="body2" color="text.secondary">
+                Attach a seeded or manual transcript.
+              </Typography>
+            </li>
+            <li>
+              <Typography variant="body2" color="text.secondary">
+                Process the transcript through the existing MII pipeline.
+              </Typography>
+            </li>
+            <li>
+              <Typography variant="body2" color="text.secondary">
+                Review the resulting incident, safety gates, mock CAD payload, and audit log.
+              </Typography>
+            </li>
+          </Box>
+        </CardContent>
+      </Card>
+
+      {/* Step 1 — Select Audio Source */}
+      <Typography variant="overline" color="text.secondary">
+        Step 1 — Select Audio Source
+      </Typography>
+      <Card sx={{ mt: 1, mb: 3 }}>
+        <CardContent>
+          <TextField
+            select
+            label="Source type"
+            value={sourceType}
+            onChange={(e) => setSourceType(e.target.value as AudioSourceType)}
+            sx={{ minWidth: 260 }}
+            size="small"
+          >
+            {SOURCE_OPTIONS.map((o) => (
+              <MenuItem key={o.value} value={o.value}>
+                {o.label}
+              </MenuItem>
+            ))}
+          </TextField>
+        </CardContent>
+      </Card>
+
+      {/* Step 2 — Add Audio */}
+      <Typography variant="overline" color="text.secondary">
+        Step 2 — Add Audio
+      </Typography>
+      <Card sx={{ mt: 1, mb: 3 }}>
+        <CardContent>
+          <Stack spacing={2}>
+            <Button component="label" variant="outlined" startIcon={<UploadFileIcon />} sx={{ alignSelf: 'flex-start' }}>
+              Choose audio file
+              <input hidden type="file" accept={ACCEPT} onChange={handleFileChange} />
+            </Button>
+
+            {filePreview && (
+              <Box sx={{ p: 1.5, border: '1px solid rgba(255,255,255,0.12)', borderRadius: 1 }}>
+                <Typography variant="subtitle2" sx={{ wordBreak: 'break-all' }}>
+                  {filePreview.file.name}
+                </Typography>
+                <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.75, my: 1 }}>
+                  <Chip size="small" variant="outlined" label={filePreview.file.type || 'unknown/type'} />
+                  <Chip size="small" variant="outlined" label={formatBytes(filePreview.file.size)} />
+                </Box>
+                {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
+                <audio controls src={filePreview.objectUrl} style={{ width: '100%' }} />
+                <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.5 }}>
+                  Preview is session-local only — the file is not uploaded anywhere.
+                </Typography>
+              </Box>
+            )}
+
+            <TextField
+              label="Notes / provenance"
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              multiline
+              minRows={2}
+              fullWidth
+              size="small"
+            />
+
+            <Stack direction="row" spacing={1.5} sx={{ flexWrap: 'wrap', gap: 1.5 }}>
+              <Button
+                variant="contained"
+                startIcon={<UploadFileIcon />}
+                onClick={createAssetFromFile}
+                disabled={!filePreview}
+              >
+                Add Audio Asset
+              </Button>
+              <Button variant="outlined" startIcon={<NoteAddIcon />} onClick={createPlaceholder}>
+                Create Manual Placeholder
+              </Button>
+            </Stack>
+
+            {activeAsset && (
+              <Alert severity="success" icon={false}>
+                Active audio asset: <b>{activeAsset.filename}</b> ({activeAsset.status.replace(/_/g, ' ')})
+              </Alert>
+            )}
+          </Stack>
+        </CardContent>
+      </Card>
+
+      {/* Optional — Generate Transcript with ASR Job (Phase 2C) */}
+      <Typography variant="overline" color="text.secondary">
+        Optional — Generate Transcript with ASR Job
+      </Typography>
+      <Card sx={{ mt: 1, mb: 3, borderColor: 'info.main', borderWidth: 1, borderStyle: 'solid' }}>
+        <CardContent>
+          <Stack spacing={2}>
+            <Typography variant="body2" color="text.secondary">
+              Phase 2C simulates an asynchronous ASR lifecycle locally. It does not transcribe audio
+              content. Mock providers generate ASR-shaped transcript results so the
+              request/queue/transcribe/complete flow can be tested safely. No audio is uploaded and
+              no external service is contacted.
+            </Typography>
+
+            <Stack direction="row" spacing={1.5} sx={{ flexWrap: 'wrap', gap: 1.5, alignItems: 'center' }}>
+              <TextField
+                select
+                label="ASR provider"
+                value={asrProvider}
+                onChange={(e) => setAsrProvider(e.target.value as AsrProvider)}
+                size="small"
+                sx={{ minWidth: 240 }}
+              >
+                {ASR_PROVIDER_REGISTRY.map((p) => (
+                  <MenuItem key={p.provider} value={p.provider}>
+                    {p.label}
+                  </MenuItem>
+                ))}
+              </TextField>
+              {providerDef.supportsScenario && (
+                <TextField
+                  select
+                  label="Scenario"
+                  value={asrScenarioChoice}
+                  onChange={(e) => setAsrScenarioChoice(e.target.value)}
+                  size="small"
+                  sx={{ minWidth: 220 }}
+                >
+                  {SCENARIO_OPTIONS.map((o) => (
+                    <MenuItem key={o.id} value={o.id}>
+                      {o.label}
+                    </MenuItem>
+                  ))}
+                </TextField>
+              )}
+            </Stack>
+
+            <Typography variant="caption" color="text.secondary">
+              {providerDef.description}
+            </Typography>
+
+            {providerDef.supportsFreeform && (
+              <TextField
+                label="Freeform transcript input"
+                value={asrFreeformText}
+                onChange={(e) => setAsrFreeformText(e.target.value)}
+                multiline
+                minRows={3}
+                fullWidth
+                placeholder={'MDSO: You have a 3-41 at 210 174th Street Apartment 123.'}
+              />
+            )}
+
+            <Stack direction="row" spacing={1.5} sx={{ flexWrap: 'wrap', gap: 1.5 }}>
+              <Button
+                variant="contained"
+                color="info"
+                startIcon={<GraphicEqIcon />}
+                onClick={requestJob}
+                disabled={
+                  !activeAssetId || (providerDef.supportsFreeform && !asrFreeformText.trim())
+                }
+              >
+                Request ASR Job
+              </Button>
+              <Button variant="outlined" onClick={advanceJob} disabled={!activeJob || jobIsTerminal}>
+                Advance Job
+              </Button>
+              <Button
+                variant="outlined"
+                onClick={runJobToCompletion}
+                disabled={!activeJob || jobIsTerminal}
+              >
+                Run Job to Completion
+              </Button>
+              <Button
+                variant="outlined"
+                color="warning"
+                onClick={cancelJob}
+                disabled={!activeJob || jobIsTerminal}
+              >
+                Cancel Job
+              </Button>
+            </Stack>
+
+            {!activeAssetId && (
+              <Typography variant="caption" color="text.secondary">
+                Create an audio asset in Step 2 first.
+              </Typography>
+            )}
+
+            {activeJob && (
+              <AsrJobCard
+                job={activeJob}
+                filename={assets.find((a) => a.id === activeJob.audioAssetId)?.filename}
+              />
+            )}
+
+            {activeJobResult && (
+              <AsrResultCard
+                result={activeJobResult}
+                filename={assets.find((a) => a.id === activeJobResult.audioAssetId)?.filename}
+              >
+                <Button
+                  variant="contained"
+                  color="info"
+                  startIcon={<LinkIcon />}
+                  onClick={() => attachAsr(activeJobResult.id)}
+                  disabled={isAsrAttached(activeJobResult.id)}
+                >
+                  {isAsrAttached(activeJobResult.id)
+                    ? 'ASR Transcript Attached'
+                    : 'Attach ASR Transcript to Audio'}
+                </Button>
+              </AsrResultCard>
+            )}
+          </Stack>
+        </CardContent>
+      </Card>
+
+      {/* Step 3 — Attach Transcript */}
+      <Typography variant="overline" color="text.secondary">
+        Step 3 — Attach Transcript
+      </Typography>
+      <Card sx={{ mt: 1, mb: 3 }}>
+        <CardContent>
+          <Stack spacing={2}>
+            <Stack direction="row" spacing={1.5} sx={{ flexWrap: 'wrap', gap: 1.5, alignItems: 'center' }}>
+              <TextField
+                select
+                label="Seeded scenario"
+                value={scenarioChoice}
+                onChange={(e) => setScenarioChoice(e.target.value)}
+                size="small"
+                sx={{ minWidth: 220 }}
+              >
+                {SCENARIO_OPTIONS.map((o) => (
+                  <MenuItem key={o.id} value={o.id}>
+                    {o.label}
+                  </MenuItem>
+                ))}
+              </TextField>
+              <Button variant="outlined" onClick={useSeededTranscript}>
+                Use Seeded Scenario Transcript
+              </Button>
+              {attachScenarioId && (
+                <Chip size="small" color="primary" variant="outlined" label={`Seeded: ${attachScenarioId}`} />
+              )}
+            </Stack>
+
+            <TextField
+              label="Transcript (Speaker: text per line)"
+              value={transcriptText}
+              onChange={(e) => {
+                setTranscriptText(e.target.value);
+                // Manual edits switch this attachment to best-effort freeform mode.
+                setAttachScenarioId(undefined);
+              }}
+              multiline
+              minRows={6}
+              fullWidth
+              placeholder={'MDSO: Sunny Isles fifty.\nSIBPD: Sunny Isles fifty QSK.'}
+            />
+
+            <Button
+              variant="contained"
+              startIcon={<LinkIcon />}
+              onClick={attachTranscript}
+              disabled={!activeAssetId || !transcriptText.trim()}
+              sx={{ alignSelf: 'flex-start' }}
+            >
+              Attach Transcript to Audio
+            </Button>
+
+            {!activeAssetId && (
+              <Typography variant="caption" color="text.secondary">
+                Create an audio asset in Step 2 first.
+              </Typography>
+            )}
+            {activeAttachment && (
+              <Alert severity="info" icon={false}>
+                Transcript attached{activeAttachment.scenarioId ? ` (seeded: ${activeAttachment.scenarioId})` : ' (freeform)'} — ready to process.
+              </Alert>
+            )}
+          </Stack>
+        </CardContent>
+      </Card>
+
+      {/* Step 4 — Process Through MII Pipeline */}
+      <Typography variant="overline" color="text.secondary">
+        Step 4 — Process Through MII Pipeline
+      </Typography>
+      <Card sx={{ mt: 1, mb: 4 }}>
+        <CardContent>
+          <Stack direction="row" spacing={1.5} sx={{ flexWrap: 'wrap', gap: 1.5, alignItems: 'center' }}>
+            <Button
+              variant="contained"
+              color="secondary"
+              startIcon={<PlayForWorkIcon />}
+              onClick={processAttachment}
+              disabled={!activeAttachmentId || Boolean(activeAttachment?.processedAt)}
+            >
+              Process Attached Transcript
+            </Button>
+            {activeAttachment?.processedAt && (
+              <Chip size="small" color="success" label="Processed" />
+            )}
+            {activeAttachment?.activeIncidentId && (
+              <Button
+                component={Link}
+                href={`/incidents/${activeAttachment.activeIncidentId}`}
+                variant="outlined"
+                startIcon={<OpenInNewIcon />}
+              >
+                See Incident Report
+              </Button>
+            )}
+          </Stack>
+        </CardContent>
+      </Card>
+
+      {/* Feature 7 — Audio intake list */}
+      <Box sx={{ display: 'flex', alignItems: 'center', mb: 1 }}>
+        <Typography variant="h6" sx={{ flexGrow: 1 }}>
+          Recent Audio Assets
+        </Typography>
+        {(assets.length > 0 || attachments.length > 0) && (
+          <Button color="error" size="small" startIcon={<ClearIcon />} onClick={clearAll}>
+            Clear Audio Intake
+          </Button>
+        )}
+      </Box>
+
+      {recentAssets.length === 0 ? (
+        <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
+          No audio assets yet. Add one in Step 2.
+        </Typography>
+      ) : (
+        <Box
+          sx={{
+            display: 'grid',
+            gridTemplateColumns: { xs: '1fr', md: 'repeat(2, 1fr)' },
+            gap: 2,
+            mb: 4,
+          }}
+        >
+          {recentAssets.map((asset) => {
+            const att = attachments.find((a) => a.audioAssetId === asset.id && a.processedAt);
+            return (
+              <AudioAssetCard
+                key={asset.id}
+                asset={asset}
+                linkedIncidentId={att?.activeIncidentId}
+              />
+            );
+          })}
+        </Box>
+      )}
+
+      {recentAttachments.length > 0 && (
+        <>
+          <Typography variant="h6" sx={{ mb: 1 }}>
+            Transcript Attachments
+          </Typography>
+          <Card variant="outlined" sx={{ mb: 4 }}>
+            <CardContent>
+              {recentAttachments.map((att, idx) => {
+                const asset = assets.find((a) => a.id === att.audioAssetId);
+                const evNum = eventNumberFor(att.activeIncidentId);
+                return (
+                  <Box key={att.id}>
+                    {idx > 0 && <Divider sx={{ my: 1.5 }} />}
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
+                      <Typography variant="subtitle2" sx={{ wordBreak: 'break-all' }}>
+                        {asset?.filename ?? att.audioAssetId}
+                      </Typography>
+                      <Chip
+                        size="small"
+                        variant="outlined"
+                        label={att.scenarioId ? `seeded: ${att.scenarioId}` : 'freeform'}
+                      />
+                      <Chip
+                        size="small"
+                        color={att.processedAt ? 'success' : 'default'}
+                        label={att.processedAt ? 'processed' : 'attached'}
+                      />
+                    </Box>
+                    <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.5 }}>
+                      {att.transcriptLineIds.length} transcript line
+                      {att.transcriptLineIds.length === 1 ? '' : 's'}
+                      {att.processedAt ? '' : ' (not yet processed)'}
+                      {att.activeIncidentId
+                        ? ` · incident ${evNum ?? att.activeIncidentId}`
+                        : att.processedAt
+                          ? ' · no incident created'
+                          : ''}
+                    </Typography>
+                    {att.activeIncidentId && (
+                      <Button
+                        component={Link}
+                        href={`/incidents/${att.activeIncidentId}`}
+                        size="small"
+                        startIcon={<OpenInNewIcon />}
+                        sx={{ mt: 0.5 }}
+                      >
+                        See Incident Report
+                      </Button>
+                    )}
+                  </Box>
+                );
+              })}
+            </CardContent>
+          </Card>
+        </>
+      )}
+
+      {recentAsrJobs.length > 0 && (
+        <>
+          <Typography variant="h6" sx={{ mb: 1 }}>
+            Recent ASR Jobs
+          </Typography>
+          <Box
+            sx={{
+              display: 'grid',
+              gridTemplateColumns: { xs: '1fr', md: 'repeat(2, 1fr)' },
+              gap: 2,
+              mb: 4,
+            }}
+          >
+            {recentAsrJobs.map((job) => (
+              <AsrJobCard
+                key={job.id}
+                job={job}
+                filename={assets.find((a) => a.id === job.audioAssetId)?.filename}
+                compact
+              >
+                {!['COMPLETED', 'FAILED', 'CANCELLED'].includes(job.status) && (
+                  <Button
+                    size="small"
+                    variant="outlined"
+                    onClick={() => {
+                      miiStore.runAsrJobToCompletion(job.id);
+                      setActiveJobId(job.id);
+                    }}
+                  >
+                    Run to Completion
+                  </Button>
+                )}
+                {job.status === 'COMPLETED' && job.resultId && (
+                  <Button
+                    size="small"
+                    variant={isAsrAttached(job.resultId) ? 'outlined' : 'contained'}
+                    color="info"
+                    startIcon={<LinkIcon />}
+                    onClick={() => job.resultId && attachAsr(job.resultId)}
+                    disabled={isAsrAttached(job.resultId)}
+                  >
+                    {isAsrAttached(job.resultId) ? 'Attached' : 'Attach ASR Transcript'}
+                  </Button>
+                )}
+              </AsrJobCard>
+            ))}
+          </Box>
+        </>
+      )}
+
+      {recentAsrResults.length > 0 && (
+        <>
+          <Typography variant="h6" sx={{ mb: 1 }}>
+            Recent ASR Results
+          </Typography>
+          <Box
+            sx={{
+              display: 'grid',
+              gridTemplateColumns: { xs: '1fr', md: 'repeat(2, 1fr)' },
+              gap: 2,
+              mb: 4,
+            }}
+          >
+            {recentAsrResults.map((result) => {
+              const attached = isAsrAttached(result.id);
+              return (
+                <AsrResultCard
+                  key={result.id}
+                  result={result}
+                  filename={assets.find((a) => a.id === result.audioAssetId)?.filename}
+                  compact
+                >
+                  {result.status === 'COMPLETED' && (
+                    <Button
+                      variant={attached ? 'outlined' : 'contained'}
+                      color="info"
+                      size="small"
+                      startIcon={<LinkIcon />}
+                      onClick={() => attachAsr(result.id)}
+                      disabled={attached}
+                    >
+                      {attached ? 'Attached' : 'Attach ASR Transcript to Audio'}
+                    </Button>
+                  )}
+                </AsrResultCard>
+              );
+            })}
+          </Box>
+        </>
+      )}
+
+      <Snackbar
+        open={Boolean(toast)}
+        autoHideDuration={4000}
+        onClose={() => setToast(null)}
+        message={toast ?? ''}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}
+      />
+    </Box>
+  );
+}

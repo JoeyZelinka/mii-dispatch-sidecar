@@ -106,6 +106,14 @@ export default function DemoClient() {
         Simulated Data Only — no real radio, CAD, agency systems, or external APIs.
       </Alert>
 
+      <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 2 }}>
+        <Link href="/audio" style={{ color: 'inherit' }}>
+          Audio Intake
+        </Link>{' '}
+        now includes a mock ASR adapter shell. It creates ASR-shaped transcript results from seeded
+        or manual text; real ASR is not enabled yet.
+      </Typography>
+
       <Alert severity="info" sx={{ mb: 3 }}>
         <AlertTitle>How to use this demo</AlertTitle>
         <Box component="ol" sx={{ m: 0, pl: 2.5 }}>

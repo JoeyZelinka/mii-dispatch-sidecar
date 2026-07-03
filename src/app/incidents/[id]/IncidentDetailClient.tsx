@@ -12,6 +12,10 @@ import {
   useAudit,
   useTranscriptLines,
   useMockCadPayload,
+  useAudioAssets,
+  useAudioTranscriptAttachments,
+  useAsrTranscriptResults,
+  useAsrJobs,
 } from '@/lib/mii/store';
 import { IncidentStatusChip, ConfidenceChip } from '@/components/StatusChip';
 import IncidentContextBundleCard from '@/components/IncidentContextBundleCard';
@@ -23,6 +27,7 @@ import HumanReviewActions from '@/components/HumanReviewActions';
 import MockCadPayloadCard from '@/components/MockCadPayloadCard';
 import SafetyGatesCard from '@/components/SafetyGatesCard';
 import ConflictResolutionCard from '@/components/ConflictResolutionCard';
+import AudioProvenanceCard from '@/components/AudioProvenanceCard';
 import { submitBlockReasons, hasUnconfirmedSensitive } from '@/lib/mii/safetyGates';
 
 export default function IncidentDetailClient({ id }: { id: string }) {
@@ -32,6 +37,10 @@ export default function IncidentDetailClient({ id }: { id: string }) {
   const audit = useAudit();
   const allLines = useTranscriptLines();
   const payload = useMockCadPayload(id);
+  const audioAssets = useAudioAssets();
+  const audioAttachments = useAudioTranscriptAttachments();
+  const asrResults = useAsrTranscriptResults();
+  const asrJobs = useAsrJobs();
   const [toast, setToast] = React.useState<string | null>(null);
 
   if (!incident) {
@@ -50,6 +59,7 @@ export default function IncidentDetailClient({ id }: { id: string }) {
   const recommendations = allRecs.filter((r) => r.incidentId === id);
   const incidentLines = allLines.filter((l) => incident.transcriptLineIds.includes(l.id));
   const incidentAudit = audit.filter((e) => e.incidentId === id);
+  const linkedAudio = audioAttachments.filter((a) => a.activeIncidentId === id);
   const unconfirmedSensitive = hasUnconfirmedSensitive(incident);
   const blockReasons = submitBlockReasons(incident);
 
@@ -97,6 +107,14 @@ export default function IncidentDetailClient({ id }: { id: string }) {
             onReject={(fid) => miiStore.rejectField(id, fid)}
             onConfirmSensitive={(fid) => miiStore.confirmSensitiveField(id, fid)}
           />
+          {linkedAudio.length > 0 && (
+            <AudioProvenanceCard
+              attachments={linkedAudio}
+              assets={audioAssets}
+              asrResults={asrResults}
+              asrJobs={asrJobs}
+            />
+          )}
           <TranscriptTimeline lines={incidentLines} />
           <AuditTimeline events={incidentAudit} title="Incident Audit Timeline" />
         </Box>

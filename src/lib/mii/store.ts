@@ -2,6 +2,11 @@
 
 import { useSyncExternalStore } from 'react';
 import type {
+  AsrJob,
+  AsrProvider,
+  AsrTranscriptResult,
+  AudioAsset,
+  AudioTranscriptAttachment,
   AuditEvent,
   IncidentContext,
   MockCadPayload,
@@ -13,14 +18,25 @@ import type {
 import { SEED_UNITS } from './seed';
 import type { MockCadOptions } from './mockCad';
 import {
+  type AddAudioAssetInput,
   type MiiState,
+  addAudioAsset as engineAddAudioAsset,
+  advanceAsrJob as engineAdvanceAsrJob,
   applySuggestedFields as engineApplyFields,
   assignUnit as engineAssignUnit,
+  attachAsrResultToAudio as engineAttachAsrResult,
+  attachTranscriptToAudio as engineAttachTranscript,
+  cancelAsrJob as engineCancelAsrJob,
+  clearAudioIntake as engineClearAudioIntake,
   clearScenarioReplay as engineClearReplay,
   closeIncident as engineCloseIncident,
   confirmAsr as engineConfirmAsr,
   confirmSensitiveField as engineConfirmSensitive,
+  processAudioTranscriptAttachment as engineProcessAudioAttachment,
   processScenarioReplayNext as engineReplayNext,
+  requestAsrJob as engineRequestAsrJob,
+  runAsrJobToCompletion as engineRunAsrJobToCompletion,
+  runMockAsrForAudio as engineRunMockAsr,
   rejectField as engineRejectField,
   resolveFieldConflict as engineResolveConflict,
   runScenario as engineRunScenario,
@@ -40,6 +56,10 @@ function freshState(): MiiState {
     audit: [],
     mockCadPayloads: {},
     replay: null,
+    audioAssets: [],
+    audioTranscriptAttachments: [],
+    asrTranscriptResults: [],
+    asrJobs: [],
   };
 }
 
@@ -53,6 +73,15 @@ function loadState(): MiiState {
     if (!parsed.units || !Array.isArray(parsed.units)) return freshState();
     // Forward-compat: older persisted state predates the replay slice.
     if (parsed.replay === undefined) parsed.replay = null;
+    // Forward-compat: older persisted state predates the audio intake slices.
+    if (!Array.isArray(parsed.audioAssets)) parsed.audioAssets = [];
+    if (!Array.isArray(parsed.audioTranscriptAttachments)) {
+      parsed.audioTranscriptAttachments = [];
+    }
+    // Forward-compat: older persisted state predates the ASR results slice.
+    if (!Array.isArray(parsed.asrTranscriptResults)) parsed.asrTranscriptResults = [];
+    // Forward-compat: older persisted state predates the ASR jobs slice.
+    if (!Array.isArray(parsed.asrJobs)) parsed.asrJobs = [];
     return parsed;
   } catch {
     return freshState();
@@ -148,6 +177,48 @@ export const miiStore = {
   closeIncident(incidentId: string) {
     update((d) => engineCloseIncident(d, incidentId, REVIEWER));
   },
+
+  // --- Phase 2A audio intake actions ---
+  addAudioAsset(input: AddAudioAssetInput): AudioAsset {
+    return update((d) => engineAddAudioAsset(d, input));
+  },
+  attachTranscriptToAudio(
+    audioAssetId: string,
+    transcriptText: string,
+    scenarioId?: string
+  ): AudioTranscriptAttachment {
+    return update((d) => engineAttachTranscript(d, audioAssetId, transcriptText, scenarioId));
+  },
+  processAudioTranscriptAttachment(attachmentId: string): { incidentId?: string } {
+    return update((d) => engineProcessAudioAttachment(d, attachmentId, REVIEWER));
+  },
+  runMockAsrForAudio(
+    audioAssetId: string,
+    options: { scenarioId?: string; freeformTranscriptText?: string }
+  ): AsrTranscriptResult {
+    return update((d) => engineRunMockAsr(d, audioAssetId, { ...options, actor: REVIEWER }));
+  },
+  attachAsrResultToAudio(asrResultId: string): AudioTranscriptAttachment | undefined {
+    return update((d) => engineAttachAsrResult(d, asrResultId, REVIEWER));
+  },
+  requestAsrJob(
+    audioAssetId: string,
+    options: { provider: AsrProvider; scenarioId?: string; freeformTranscriptText?: string }
+  ): AsrJob {
+    return update((d) => engineRequestAsrJob(d, audioAssetId, { ...options, actor: REVIEWER }));
+  },
+  advanceAsrJob(jobId: string): AsrJob | undefined {
+    return update((d) => engineAdvanceAsrJob(d, jobId, REVIEWER));
+  },
+  runAsrJobToCompletion(jobId: string): AsrJob | undefined {
+    return update((d) => engineRunAsrJobToCompletion(d, jobId, REVIEWER));
+  },
+  cancelAsrJob(jobId: string): AsrJob | undefined {
+    return update((d) => engineCancelAsrJob(d, jobId, REVIEWER));
+  },
+  clearAudioIntake() {
+    update((d) => engineClearAudioIntake(d));
+  },
   reset() {
     state = freshState();
     persist();
@@ -190,4 +261,16 @@ export function useMockCadPayload(incidentId: string): MockCadPayload | undefine
 }
 export function useReplay(): ReplayState | null {
   return useStore((s) => s.replay);
+}
+export function useAudioAssets(): AudioAsset[] {
+  return useStore((s) => s.audioAssets);
+}
+export function useAudioTranscriptAttachments(): AudioTranscriptAttachment[] {
+  return useStore((s) => s.audioTranscriptAttachments);
+}
+export function useAsrTranscriptResults(): AsrTranscriptResult[] {
+  return useStore((s) => s.asrTranscriptResults);
+}
+export function useAsrJobs(): AsrJob[] {
+  return useStore((s) => s.asrJobs);
 }

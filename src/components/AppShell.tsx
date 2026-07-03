@@ -20,6 +20,7 @@ import DashboardIcon from '@mui/icons-material/Dashboard';
 import LocalFireDepartmentIcon from '@mui/icons-material/LocalFireDepartment';
 import DirectionsCarIcon from '@mui/icons-material/DirectionsCar';
 import RecordVoiceOverIcon from '@mui/icons-material/RecordVoiceOver';
+import GraphicEqIcon from '@mui/icons-material/GraphicEq';
 import MenuBookIcon from '@mui/icons-material/MenuBook';
 import HistoryIcon from '@mui/icons-material/History';
 import RadioIcon from '@mui/icons-material/Radio';
@@ -38,6 +39,7 @@ const NAV: { href: string; label: string; icon: React.ReactNode }[] = [
   { href: '/demo', label: 'Guided Demo', icon: <SlideshowIcon fontSize="small" /> },
   { href: '/incidents', label: 'Incidents', icon: <LocalFireDepartmentIcon fontSize="small" /> },
   { href: '/transcripts', label: 'Transcripts', icon: <RecordVoiceOverIcon fontSize="small" /> },
+  { href: '/audio', label: 'Audio Intake', icon: <GraphicEqIcon fontSize="small" /> },
   { href: '/units', label: 'Units', icon: <DirectionsCarIcon fontSize="small" /> },
   { href: '/codes', label: 'Codes', icon: <MenuBookIcon fontSize="small" /> },
   { href: '/audit', label: 'Audit Log', icon: <HistoryIcon fontSize="small" /> },
