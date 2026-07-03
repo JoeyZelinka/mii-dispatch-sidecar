@@ -47,7 +47,13 @@ import {
   evaluateSignOffPolicyGateForIncident,
   updateDemoPolicy,
 } from '@/lib/mii/signOffPolicy';
-import { buildIncidentAuditExport } from '@/lib/mii/auditExport';
+import {
+  buildIncidentAuditExport,
+  buildSignedIncidentAuditExport,
+  verifyIncidentAuditExport,
+} from '@/lib/mii/auditExport';
+import { canonicalizeForHash, stripAuditIntegrity } from '@/lib/mii/canonicalJson';
+import { sha256Hex } from '@/lib/mii/hash';
 import {
   createDeterministicWaveform,
   estimateDurationFromSegments,
@@ -1309,7 +1315,98 @@ check('Incident audit export for direct scenario is N/A-safe', () => {
 });
 
 // =========================================================================
+// Phase 2J — tamper-evident audit export verification (async)
+// =========================================================================
 
-console.log('');
-console.log(`MII verification complete: ${passed} passed, ${failed} failed`);
-process.exit(failed === 0 ? 0 : 1);
+async function checkAsync(name: string, fn: () => Promise<void>): Promise<void> {
+  try {
+    await fn();
+    passed++;
+    console.log(`PASS ${name}`);
+  } catch (e) {
+    failed++;
+    console.log(`FAIL ${name}: ${(e as Error).message}`);
+  }
+}
+
+async function mainAsync(): Promise<void> {
+  await checkAsync('canonicalizeForHash sorts object keys', async () => {
+    eq(canonicalizeForHash({ b: 1, a: 2 }), canonicalizeForHash({ a: 2, b: 1 }), 'key order stable');
+  });
+
+  await checkAsync('canonicalizeForHash preserves array order', async () => {
+    ok(canonicalizeForHash([2, 1]) !== canonicalizeForHash([1, 2]), 'array order matters');
+  });
+
+  await checkAsync('stripAuditIntegrity removes only top-level integrity', async () => {
+    const input = { integrity: { hash: 'x' }, nested: { integrity: { keep: true } }, a: 1 };
+    const out = stripAuditIntegrity(input) as Record<string, unknown>;
+    eq((out as { integrity?: unknown }).integrity, undefined, 'top-level integrity removed');
+    eq(((out.nested as Record<string, unknown>).integrity as Record<string, unknown>).keep, true, 'nested integrity preserved');
+    // Original not mutated.
+    ok(Boolean((input as { integrity?: unknown }).integrity), 'input not mutated');
+  });
+
+  await checkAsync('sha256Hex is deterministic', async () => {
+    const a = await sha256Hex('MII_lite');
+    const b = await sha256Hex('MII_lite');
+    eq(a, b, 'same input same hash');
+    eq(a.length, 64, 'hash length 64');
+    ok(/^[0-9a-f]{64}$/.test(a), 'lowercase hex');
+  });
+
+  await checkAsync('buildSignedIncidentAuditExport adds integrity', async () => {
+    const { s, incidentId } = runPennySignedFlow('medical-3-41');
+    const exp = await buildSignedIncidentAuditExport(s, incidentId!);
+    ok(!!exp.integrity, 'integrity exists');
+    eq(exp.integrity!.hash.length, 64, 'hash length 64');
+    eq(exp.integrity!.algorithm, 'SHA-256', 'algorithm SHA-256');
+    eq(exp.integrity!.canonicalization, 'MII_LITE_CANONICAL_JSON_V1', 'canonicalization tag');
+  });
+
+  await checkAsync('verifyIncidentAuditExport VALID for untouched export', async () => {
+    const { s, incidentId } = runPennySignedFlow('medical-3-41');
+    const exp = await buildSignedIncidentAuditExport(s, incidentId!);
+    const v = await verifyIncidentAuditExport(exp);
+    eq(v.status, 'VALID', 'status VALID');
+    eq(v.expectedHash, v.actualHash, 'hashes match');
+  });
+
+  await checkAsync('verifyIncidentAuditExport MODIFIED after content change', async () => {
+    const { s, incidentId } = runPennySignedFlow('medical-3-41');
+    const exp = await buildSignedIncidentAuditExport(s, incidentId!);
+    const tampered = JSON.parse(JSON.stringify(exp));
+    tampered.incident.naturePlain = 'TAMPERED VALUE';
+    const v = await verifyIncidentAuditExport(tampered);
+    eq(v.status, 'MODIFIED', 'status MODIFIED');
+    ok(v.expectedHash !== v.actualHash, 'hashes differ');
+  });
+
+  await checkAsync('verifyIncidentAuditExport INVALID_FORMAT for missing integrity', async () => {
+    const { s, incident } = runInstant('medical-3-41');
+    const exp = buildIncidentAuditExport(s, incident!.id); // unsigned
+    const v = await verifyIncidentAuditExport(exp);
+    eq(v.status, 'INVALID_FORMAT', 'status INVALID_FORMAT');
+  });
+
+  await checkAsync('verifyIncidentAuditExport INVALID_FORMAT for non-export object', async () => {
+    const v = await verifyIncidentAuditExport({ hello: 'world' });
+    eq(v.status, 'INVALID_FORMAT', 'status INVALID_FORMAT');
+  });
+
+  await checkAsync('signed export preserves Phase 2I provenance', async () => {
+    const { s, incidentId } = runPennySignedFlow('medical-3-41');
+    const exp = await buildSignedIncidentAuditExport(s, incidentId!);
+    ok(!!exp.transcriptReviewGate, 'transcriptReviewGate present');
+    ok(!!exp.signOffPolicyGate, 'signOffPolicyGate present');
+    ok(!!exp.safetyReadiness, 'safetyReadiness present');
+    ok(exp.pennyReviews.length > 0, 'pennyReviews present');
+    ok(exp.auditEvents.length > 0, 'auditEvents present');
+  });
+
+  console.log('');
+  console.log(`MII verification complete: ${passed} passed, ${failed} failed`);
+  process.exit(failed === 0 ? 0 : 1);
+}
+
+void mainAsync();

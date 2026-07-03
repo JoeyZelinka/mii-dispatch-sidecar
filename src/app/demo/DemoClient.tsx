@@ -110,8 +110,8 @@ export default function DemoClient() {
         <Link href="/audio" style={{ color: 'inherit' }}>
           Audio Intake
         </Link>{' '}
-        now includes PENNY review, configurable sign-off policy, transcript review gates, and local
-        JSON audit export. Real ASR is not enabled.
+        now includes PENNY review, configurable sign-off policy, transcript review gates, local JSON
+        audit export, and local hash verification. Real ASR is not enabled.
       </Typography>
 
       <Alert severity="info" sx={{ mb: 3 }}>

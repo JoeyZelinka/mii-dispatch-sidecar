@@ -105,8 +105,8 @@ export default function DashboardClient() {
             <Typography variant="h6">Recorded Audio Intake</Typography>
             <Typography variant="body2" color="text.secondary">
               PENNY human review, reviewer sign-off, configurable sign-off policy, local audit
-              export, transcript review gate, local audio metadata, mock ASR jobs, and
-              transcript-first processing. No real ASR or external services.
+              export with SHA-256 verification, transcript review gate, local audio metadata, mock
+              ASR jobs, and transcript-first processing. No real ASR or external services.
             </Typography>
           </Box>
           <Button
