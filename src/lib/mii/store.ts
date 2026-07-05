@@ -70,6 +70,15 @@ import {
   updateDemoPolicy as engineUpdateDemoPolicy,
 } from './signOffPolicy';
 import { buildIncidentAuditExport, type IncidentAuditExport } from './auditExport';
+import {
+  cancelRecordingProcessingSession as engineCancelRecordingSession,
+  completeRecordingProcessingSession as engineCompleteRecordingSession,
+  createRecordingProcessingSession as engineCreateRecordingSession,
+  linkRecordingSessionToPennyPlan as engineLinkRecordingSession,
+  markRecordingCheckpoint as engineMarkRecordingCheckpoint,
+  refreshRecordingProcessingSessionLinks as engineRefreshRecordingSession,
+  startRecordingProcessingSession as engineStartRecordingSession,
+} from './recordingProcessing';
 
 const STORAGE_KEY = 'mii_lite_state_v1';
 const REVIEWER = 'Dispatcher (you)';
@@ -91,6 +100,7 @@ function freshState(): MiiState {
     pennyTranscriptPackages: [],
     pennyReviewStates: [],
     demoPolicy: defaultDemoPolicy(),
+    recordingProcessingSessions: [],
   };
 }
 
@@ -120,6 +130,10 @@ function loadState(): MiiState {
     // Forward-compat: older persisted state predates the demo policy.
     if (!parsed.demoPolicy || !parsed.demoPolicy.signOffPolicyMode) {
       parsed.demoPolicy = defaultDemoPolicy();
+    }
+    // Forward-compat: older persisted state predates recording sessions.
+    if (!Array.isArray(parsed.recordingProcessingSessions)) {
+      parsed.recordingProcessingSessions = [];
     }
     return parsed;
   } catch {
@@ -324,6 +338,33 @@ export const miiStore = {
   buildAuditExport(incidentId: string): IncidentAuditExport {
     return buildIncidentAuditExport(state, incidentId);
   },
+
+  // --- Phase 3A Play-to-Process recording session actions ---
+  createRecordingProcessingSession(input: { audioAssetId: string; notes?: string }) {
+    return update((d) => engineCreateRecordingSession(d, { ...input, actor: REVIEWER }));
+  },
+  startRecordingProcessingSession(sessionId: string) {
+    return update((d) => engineStartRecordingSession(d, { sessionId, actor: REVIEWER }));
+  },
+  markRecordingCheckpoint(
+    sessionId: string,
+    kind: import('./types').HumanCheckpointKind,
+    summary?: string
+  ) {
+    return update((d) => engineMarkRecordingCheckpoint(d, { sessionId, kind, summary, actor: REVIEWER }));
+  },
+  linkRecordingSessionToPennyPlan(sessionId: string, pennyPlanId: string) {
+    return update((d) => engineLinkRecordingSession(d, { sessionId, pennyPlanId, actor: REVIEWER }));
+  },
+  refreshRecordingProcessingSessionLinks(sessionId: string) {
+    return update((d) => engineRefreshRecordingSession(d, sessionId));
+  },
+  completeRecordingProcessingSession(sessionId: string) {
+    return update((d) => engineCompleteRecordingSession(d, sessionId, REVIEWER));
+  },
+  cancelRecordingProcessingSession(sessionId: string) {
+    return update((d) => engineCancelRecordingSession(d, sessionId, REVIEWER));
+  },
   clearAudioIntake() {
     update((d) => engineClearAudioIntake(d));
   },
@@ -393,6 +434,9 @@ export function usePennyReviewStates(): PennyReviewState[] {
 }
 export function useDemoPolicy(): import('./types').MiiDemoPolicy {
   return useStore((s) => s.demoPolicy);
+}
+export function useRecordingProcessingSessions(): import('./types').RecordingProcessingSession[] {
+  return useStore((s) => s.recordingProcessingSessions);
 }
 
 // Re-export the pure placeholder builder so client components use one source.

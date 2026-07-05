@@ -25,6 +25,7 @@ const SOURCE_LABEL: Record<AudioAsset['sourceType'], string> = {
   AUTHORIZED_RECORDING: 'Authorized Recording',
   SYNTHETIC_TTS: 'Synthetic TTS',
   MANUAL_PLACEHOLDER: 'Manual Placeholder',
+  BARIX_RECORDING: 'Barix-style Authorized Recording',
 };
 
 // Resolve the ASR result behind an attachment: prefer the explicit link, then

@@ -55,6 +55,14 @@ import {
 import { canonicalizeForHash, stripAuditIntegrity } from '@/lib/mii/canonicalJson';
 import { sha256Hex } from '@/lib/mii/hash';
 import {
+  cancelRecordingProcessingSession,
+  completeRecordingProcessingSession,
+  createRecordingProcessingSession,
+  linkRecordingSessionToPennyPlan,
+  refreshRecordingProcessingSessionLinks,
+  startRecordingProcessingSession,
+} from '@/lib/mii/recordingProcessing';
+import {
   createDeterministicWaveform,
   estimateDurationFromSegments,
   fieldProvenanceToTimelineMarkers,
@@ -91,6 +99,7 @@ function fresh(): MiiState {
     pennyTranscriptPackages: [],
     pennyReviewStates: [],
     demoPolicy: defaultDemoPolicy(),
+    recordingProcessingSessions: [],
   };
 }
 
@@ -1312,6 +1321,130 @@ check('Incident audit export for direct scenario is N/A-safe', () => {
   eq(exp.transcriptReviewGate.status, 'NOT_APPLICABLE', 'transcriptReviewGate NOT_APPLICABLE');
   eq(exp.signOffPolicyGate.status, 'NOT_APPLICABLE', 'signOffPolicyGate NOT_APPLICABLE');
   ok(exp.auditEvents.length > 0, 'auditEvents present');
+});
+
+// =========================================================================
+// Phase 3A — Barix-style recording intake + Play-to-Process sessions
+// =========================================================================
+
+function barixAudio(s: MiiState): string {
+  return addAudioAsset(s, {
+    filename: 'barix-clip.wav',
+    sourceType: 'BARIX_RECORDING',
+    mimeType: 'audio/wav',
+    sizeBytes: 4096,
+    sourceLabel: 'Barix-style Authorized Recording',
+    sourceDevice: 'Demo Barix Source',
+    originalRecording: true,
+    recordingProvenanceNote: 'Authorized original recording file provided for local demo processing.',
+  }).id;
+}
+
+// Build a Barix asset + PENNY plan run to an evaluated package, linked to a session.
+function barixSessionToReview(): {
+  s: MiiState;
+  sessionId: string;
+  planId: string;
+  packageId: string;
+} {
+  const s = fresh();
+  const assetId = barixAudio(s);
+  const session = createRecordingProcessingSession(s, { audioAssetId: assetId, actor: ACTOR });
+  startRecordingProcessingSession(s, { sessionId: session.id, actor: ACTOR });
+  const plan = createPennyPlan(s, { audioAssetId: assetId, provider: 'MOCK_SCENARIO', scenarioId: 'medical-3-41', actor: ACTOR });
+  linkRecordingSessionToPennyPlan(s, { sessionId: session.id, pennyPlanId: plan.id, actor: ACTOR });
+  pennyRunAsrToCompletion(s, plan.id, ACTOR);
+  const pkg = evaluateAsrResultForPenny(s, plan.id, ACTOR)!;
+  refreshRecordingProcessingSessionLinks(s, session.id);
+  return { s, sessionId: session.id, planId: plan.id, packageId: pkg.id };
+}
+
+check('Barix-style audio asset preserves recording provenance', () => {
+  const s = fresh();
+  const id = barixAudio(s);
+  const asset = s.audioAssets.find((a) => a.id === id)!;
+  eq(asset.sourceType, 'BARIX_RECORDING', 'sourceType');
+  eq(asset.originalRecording, true, 'originalRecording');
+  eq(asset.sourceLabel, 'Barix-style Authorized Recording', 'sourceLabel');
+  eq(asset.sourceDevice, 'Demo Barix Source', 'sourceDevice');
+  ok(!!asset.recordingProvenanceNote, 'recordingProvenanceNote present');
+});
+
+check('Recording processing session creates human checkpoints', () => {
+  const s = fresh();
+  const assetId = barixAudio(s);
+  const session = createRecordingProcessingSession(s, { audioAssetId: assetId, actor: ACTOR });
+  eq(session.status, 'READY', 'status READY');
+  const kinds = session.checkpoints.map((c) => c.kind);
+  for (const k of ['START_PROCESSING', 'REVIEW_TRANSCRIPT', 'SIGN_OFF_REVIEW', 'ATTACH_TRANSCRIPT', 'PROCESS_INCIDENT', 'REVIEW_SAFETY_GATES', 'SUBMIT_MOCK_CAD', 'EXPORT_AUDIT']) {
+    ok(kinds.includes(k as never), `checkpoint ${k} present`);
+  }
+  ok(s.audit.some((a) => a.action === 'RECORDING_PROCESSING_SESSION_CREATED'), 'audit session created');
+});
+
+check('Starting processing marks START_PROCESSING checkpoint', () => {
+  const s = fresh();
+  const assetId = barixAudio(s);
+  const session = createRecordingProcessingSession(s, { audioAssetId: assetId, actor: ACTOR });
+  startRecordingProcessingSession(s, { sessionId: session.id, actor: ACTOR });
+  const sess = s.recordingProcessingSessions.find((x) => x.id === session.id)!;
+  eq(sess.status, 'PROCESSING_STARTED', 'status PROCESSING_STARTED');
+  ok(!!sess.startedAt, 'startedAt set');
+  ok(sess.checkpoints.find((c) => c.kind === 'START_PROCESSING')!.completed, 'START_PROCESSING completed');
+  ok(s.audit.some((a) => a.action === 'RECORDING_PROCESSING_STARTED'), 'audit started');
+});
+
+check('Session links to PENNY plan and awaits review', () => {
+  const { s, sessionId, planId } = barixSessionToReview();
+  const sess = s.recordingProcessingSessions.find((x) => x.id === sessionId)!;
+  eq(sess.pennyPlanId, planId, 'pennyPlanId linked');
+  ok(!!sess.transcriptPackageId, 'transcriptPackageId linked');
+  eq(sess.status, 'AWAITING_HUMAN_REVIEW', 'status AWAITING_HUMAN_REVIEW');
+});
+
+check('Session refresh tracks sign-off', () => {
+  const { s, sessionId, planId, packageId } = barixSessionToReview();
+  signOffPennyReview(s, { planId, packageId, actor: ACTOR });
+  refreshRecordingProcessingSessionLinks(s, sessionId);
+  const sess = s.recordingProcessingSessions.find((x) => x.id === sessionId)!;
+  eq(sess.status, 'REVIEW_SIGNED_OFF', 'status REVIEW_SIGNED_OFF');
+  ok(sess.checkpoints.find((c) => c.kind === 'SIGN_OFF_REVIEW')!.completed, 'SIGN_OFF_REVIEW completed');
+});
+
+check('Session refresh tracks attachment', () => {
+  const { s, sessionId, planId, packageId } = barixSessionToReview();
+  signOffPennyReview(s, { planId, packageId, actor: ACTOR });
+  pennyAttachTranscriptPackage(s, planId, ACTOR);
+  refreshRecordingProcessingSessionLinks(s, sessionId);
+  const sess = s.recordingProcessingSessions.find((x) => x.id === sessionId)!;
+  eq(sess.status, 'TRANSCRIPT_ATTACHED', 'status TRANSCRIPT_ATTACHED');
+  ok(sess.checkpoints.find((c) => c.kind === 'ATTACH_TRANSCRIPT')!.completed, 'ATTACH_TRANSCRIPT completed');
+});
+
+check('Session refresh tracks incident processing', () => {
+  const { s, sessionId, planId, packageId } = barixSessionToReview();
+  signOffPennyReview(s, { planId, packageId, actor: ACTOR });
+  const att = pennyAttachTranscriptPackage(s, planId, ACTOR)!;
+  processAudioTranscriptAttachment(s, att.id, ACTOR);
+  refreshRecordingProcessingSessionLinks(s, sessionId);
+  const sess = s.recordingProcessingSessions.find((x) => x.id === sessionId)!;
+  ok(!!sess.incidentId, 'incidentId set');
+  eq(sess.status, 'INCIDENT_PROCESSED', 'status INCIDENT_PROCESSED');
+  ok(sess.checkpoints.find((c) => c.kind === 'PROCESS_INCIDENT')!.completed, 'PROCESS_INCIDENT completed');
+});
+
+check('Session completion and cancellation are audited', () => {
+  const s = fresh();
+  const a1 = barixAudio(s);
+  const s1 = createRecordingProcessingSession(s, { audioAssetId: a1, actor: ACTOR });
+  completeRecordingProcessingSession(s, s1.id, ACTOR);
+  const a2 = barixAudio(s);
+  const s2 = createRecordingProcessingSession(s, { audioAssetId: a2, actor: ACTOR });
+  cancelRecordingProcessingSession(s, s2.id, ACTOR);
+  eq(s.recordingProcessingSessions.find((x) => x.id === s1.id)!.status, 'COMPLETED', 's1 COMPLETED');
+  eq(s.recordingProcessingSessions.find((x) => x.id === s2.id)!.status, 'CANCELLED', 's2 CANCELLED');
+  ok(s.audit.some((a) => a.action === 'RECORDING_PROCESSING_SESSION_COMPLETED'), 'audit completed');
+  ok(s.audit.some((a) => a.action === 'RECORDING_PROCESSING_SESSION_CANCELLED'), 'audit cancelled');
 });
 
 // =========================================================================

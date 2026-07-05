@@ -43,6 +43,11 @@ const actionColor: Partial<Record<AuditAction, 'default' | 'primary' | 'success'
   INCIDENT_TRANSCRIPT_REVIEW_SNAPSHOT: 'info',
   INCIDENT_TRANSCRIPT_SIGNOFF_RECORDED: 'success',
   DEMO_POLICY_UPDATED: 'primary',
+  RECORDING_PROCESSING_SESSION_CREATED: 'primary',
+  RECORDING_PROCESSING_STARTED: 'info',
+  RECORDING_PROCESSING_CHECKPOINT_COMPLETED: 'default',
+  RECORDING_PROCESSING_SESSION_COMPLETED: 'success',
+  RECORDING_PROCESSING_SESSION_CANCELLED: 'warning',
 };
 
 export default function AuditTimeline({

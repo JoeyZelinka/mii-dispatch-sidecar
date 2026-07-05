@@ -4,6 +4,7 @@ import { Card, CardContent, Typography, Box, Chip } from '@mui/material';
 import HistoryEduIcon from '@mui/icons-material/HistoryEdu';
 import type {
   IncidentContext,
+  RecordingProcessingSession,
   TranscriptReviewGateResult,
   TranscriptReviewGateStatus,
 } from '@/lib/mii/types';
@@ -22,15 +23,21 @@ const STATUS_COLOR: Record<
 export default function IncidentTranscriptReviewCard({
   incident,
   liveGate,
+  recordingSession,
 }: {
   incident: IncidentContext;
   liveGate?: TranscriptReviewGateResult;
+  recordingSession?: RecordingProcessingSession;
 }) {
   const snapshot = incident.transcriptReviewSnapshot;
   const liveApplicable = liveGate && liveGate.status !== 'NOT_APPLICABLE';
 
   // Render only when there's something to show.
   if (!snapshot && !liveApplicable) return null;
+
+  const checkpointsDone = recordingSession
+    ? recordingSession.checkpoints.filter((c) => c.completed).length
+    : 0;
 
   return (
     <Card variant="outlined" sx={{ borderColor: 'secondary.main' }}>
@@ -80,6 +87,18 @@ export default function IncidentTranscriptReviewCard({
           <Typography variant="body2" color="text.secondary">
             No processing-time snapshot recorded for this incident.
           </Typography>
+        )}
+
+        {recordingSession && (
+          <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.75, mt: 1 }}>
+            <Chip size="small" variant="outlined" color="primary" label={`Play-to-Process: ${recordingSession.id}`} />
+            <Chip size="small" variant="outlined" label={recordingSession.status.replace(/_/g, ' ')} />
+            <Chip
+              size="small"
+              variant="outlined"
+              label={`${checkpointsDone}/${recordingSession.checkpoints.length} checkpoints`}
+            />
+          </Box>
         )}
 
         <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 1, fontStyle: 'italic' }}>

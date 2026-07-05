@@ -32,6 +32,7 @@ import AudioTimelineCard from '@/components/AudioTimelineCard';
 import PennyPlanCard from '@/components/PennyPlanCard';
 import PennyReviewCard from '@/components/PennyReviewCard';
 import DemoPolicyCard from '@/components/DemoPolicyCard';
+import RecordingProcessingSessionCard from '@/components/RecordingProcessingSessionCard';
 import {
   miiStore,
   createPlaceholderAudioAssetInput,
@@ -43,18 +44,20 @@ import {
   usePennyTranscriptPackages,
   usePennyReviewStates,
   useDemoPolicy,
+  useRecordingProcessingSessions,
   useIncidents,
 } from '@/lib/mii/store';
 import { SCENARIOS } from '@/lib/mii/seed';
 import { ASR_PROVIDER_REGISTRY, getAsrProviderDefinition } from '@/lib/mii/asr/providerRegistry';
 import { createDeterministicWaveform } from '@/lib/mii/audioTimeline';
-import type { AsrProvider, AudioSourceType } from '@/lib/mii/types';
+import type { AsrProvider, AudioSourceType, HumanCheckpointKind } from '@/lib/mii/types';
 
 const SOURCE_OPTIONS: { value: AudioSourceType; label: string }[] = [
   { value: 'SIMULATED_UPLOAD', label: 'Simulated Upload' },
   { value: 'AUTHORIZED_RECORDING', label: 'Authorized Recording' },
   { value: 'SYNTHETIC_TTS', label: 'Synthetic TTS' },
   { value: 'MANUAL_PLACEHOLDER', label: 'Manual Placeholder' },
+  { value: 'BARIX_RECORDING', label: 'Barix-style Authorized Recording' },
 ];
 
 // Scenario picker labels, mapped to the seeded scenario ids.
@@ -82,6 +85,7 @@ export default function AudioClient() {
   const pennyPackages = usePennyTranscriptPackages();
   const pennyReviewStates = usePennyReviewStates();
   const demoPolicy = useDemoPolicy();
+  const recordingSessions = useRecordingProcessingSessions();
   const incidents = useIncidents();
 
   const [sourceType, setSourceType] = React.useState<AudioSourceType>('SIMULATED_UPLOAD');
@@ -109,6 +113,9 @@ export default function AudioClient() {
   const [pennyScenarioChoice, setPennyScenarioChoice] = React.useState('medical-3-41');
   const [pennyFreeformText, setPennyFreeformText] = React.useState('');
   const [activePennyPlanId, setActivePennyPlanId] = React.useState<string | undefined>();
+
+  // Play-to-Process recording session state (Phase 3A).
+  const [activeSessionId, setActiveSessionId] = React.useState<string | undefined>();
 
   const [toast, setToast] = React.useState<string | null>(null);
 
@@ -154,8 +161,22 @@ export default function AudioClient() {
   const pennyPlanTerminalish =
     activePennyPlan != null && ['ATTACHED', 'CANCELLED'].includes(activePennyPlan.status);
 
+  const activeSession = recordingSessions.find((s) => s.id === activeSessionId);
+  const activeSessionAsset = activeSession
+    ? assets.find((a) => a.id === activeSession.audioAssetId)
+    : undefined;
+  const showPlayToProcess =
+    activeAsset?.sourceType === 'BARIX_RECORDING' || Boolean(activeSession);
+
   const eventNumberFor = (incidentId?: string) =>
     incidents.find((i) => i.id === incidentId)?.eventNumber;
+
+  // Refresh + advance the active recording session after a human PENNY action.
+  const syncActiveSession = (kind?: HumanCheckpointKind, summary?: string) => {
+    if (!activeSessionId) return;
+    miiStore.refreshRecordingProcessingSessionLinks(activeSessionId);
+    if (kind) miiStore.markRecordingCheckpoint(activeSessionId, kind, summary);
+  };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0];
@@ -189,6 +210,7 @@ export default function AudioClient() {
     if (!filePreview) return;
     const { file, objectUrl } = filePreview;
     const durationSeconds = pendingDurationSeconds;
+    const isBarix = sourceType === 'BARIX_RECORDING';
     const asset = miiStore.addAudioAsset({
       filename: file.name,
       sourceType,
@@ -201,6 +223,12 @@ export default function AudioClient() {
         durationSeconds && durationSeconds > 0
           ? createDeterministicWaveform(durationSeconds)
           : undefined,
+      sourceLabel: isBarix ? 'Barix-style Authorized Recording' : undefined,
+      sourceDevice: isBarix ? 'Demo Barix Source' : undefined,
+      originalRecording: isBarix ? true : undefined,
+      recordingProvenanceNote: isBarix
+        ? 'Authorized original recording file provided for local demo processing.'
+        : undefined,
     });
     setActiveAssetId(asset.id);
     setActiveAttachmentId(undefined);
@@ -314,6 +342,7 @@ export default function AudioClient() {
     setActiveAttachmentId(attachment.id);
     setTranscriptText(attachment.transcriptText);
     setAttachScenarioId(attachment.scenarioId);
+    syncActiveSession('ATTACH_TRANSCRIPT', 'Reviewed transcript attached.');
     setToast('PENNY attached the reviewed transcript — process it in Step 4.');
   };
 
@@ -365,7 +394,11 @@ export default function AudioClient() {
     if (!activePennyPlan || !activePennyPackage) return;
     try {
       const rs = miiStore.signOffPennyReview(activePennyPlan.id, activePennyPackage.id);
-      if (rs?.signedOffBy) setToast(`Review signed off by ${rs.signedOffBy}.`);
+      if (rs?.signedOffBy) {
+        syncActiveSession('REVIEW_TRANSCRIPT', 'Transcript reviewed.');
+        syncActiveSession('SIGN_OFF_REVIEW', `Signed off by ${rs.signedOffBy}.`);
+        setToast(`Review signed off by ${rs.signedOffBy}.`);
+      }
     } catch (e) {
       setToast((e as Error).message);
     }
@@ -395,11 +428,70 @@ export default function AudioClient() {
   const processAttachment = () => {
     if (!activeAttachmentId) return;
     const { incidentId } = miiStore.processAudioTranscriptAttachment(activeAttachmentId);
+    syncActiveSession('PROCESS_INCIDENT', 'Attached transcript processed.');
     setToast(
       incidentId
         ? `Processed — incident ${eventNumberFor(incidentId) ?? incidentId} created/updated.`
         : 'Processed — no incident created (admin chatter or no incident-defining facts).'
     );
+  };
+
+  // --- Play-to-Process session handlers (Phase 3A) ---
+  const createSession = () => {
+    if (!activeAssetId) return;
+    const s = miiStore.createRecordingProcessingSession({ audioAssetId: activeAssetId });
+    setActiveSessionId(s.id);
+    setToast('Play-to-Process session created.');
+  };
+
+  const playAndProcess = () => {
+    if (!activeSession || !activeSessionAsset) return;
+    // Local playback only (best-effort; requires the user gesture we already have).
+    if (activeSessionAsset.objectUrl) {
+      try {
+        void new Audio(activeSessionAsset.objectUrl).play().catch(() => {});
+      } catch {
+        // ignore playback failures — Play-to-Process preparation still proceeds
+      }
+    }
+    miiStore.startRecordingProcessingSession(activeSession.id);
+    // Automated preparation via the selected mock ASR/PENNY path — no real ASR.
+    const plan = miiStore.createPennyPlan({
+      audioAssetId: activeSession.audioAssetId,
+      provider: pennyProvider,
+      scenarioId: pennyProviderDef.supportsScenario ? pennyScenarioChoice : undefined,
+      freeformTranscriptText: pennyProviderDef.supportsFreeform ? pennyFreeformText : undefined,
+    });
+    setActivePennyPlanId(plan.id);
+    miiStore.linkRecordingSessionToPennyPlan(activeSession.id, plan.id);
+    miiStore.pennyRunAsrToCompletion(plan.id);
+    miiStore.evaluateAsrResultForPenny(plan.id);
+    miiStore.refreshRecordingProcessingSessionLinks(activeSession.id);
+    setToast('Play & Process complete — awaiting human transcript review.');
+  };
+
+  const refreshSession = () => {
+    if (!activeSessionId) return;
+    miiStore.refreshRecordingProcessingSessionLinks(activeSessionId);
+    setToast('Session links refreshed.');
+  };
+
+  const sessionCheckpoint = (kind: HumanCheckpointKind, summary?: string) => {
+    if (!activeSessionId) return;
+    miiStore.markRecordingCheckpoint(activeSessionId, kind, summary);
+    setToast(`Checkpoint marked: ${kind.replace(/_/g, ' ')}.`);
+  };
+
+  const completeSession = () => {
+    if (!activeSessionId) return;
+    miiStore.completeRecordingProcessingSession(activeSessionId);
+    setToast('Play-to-Process session completed.');
+  };
+
+  const cancelSession = () => {
+    if (!activeSessionId) return;
+    miiStore.cancelRecordingProcessingSession(activeSessionId);
+    setToast('Play-to-Process session cancelled.');
   };
 
   const clearAll = () => {
@@ -414,6 +506,7 @@ export default function AudioClient() {
     setActiveAttachmentId(undefined);
     setActiveJobId(undefined);
     setActivePennyPlanId(undefined);
+    setActiveSessionId(undefined);
     setTranscriptText('');
     setAttachScenarioId(undefined);
     setFilePreview(null);
@@ -582,6 +675,75 @@ export default function AudioClient() {
           </Stack>
         </CardContent>
       </Card>
+
+      {/* Play-to-Process — Barix-style Recording Intake (Phase 3A) */}
+      {showPlayToProcess && (
+        <>
+          <Typography variant="overline" color="text.secondary">
+            Play-to-Process — Barix-style Recording Intake
+          </Typography>
+          <Card sx={{ mt: 1, mb: 3, borderColor: 'primary.main', borderWidth: 1, borderStyle: 'solid' }}>
+            <CardContent>
+              <Stack spacing={2}>
+                <Typography variant="body2" color="text.secondary">
+                  End-to-end does not mean fully automatic. This flow starts automated preparation,
+                  then stops at human checkpoints for transcript review, sign-off, attachment,
+                  incident processing, safety gate review, Mock CAD submission, and audit export.
+                </Typography>
+                <Typography variant="caption" color="text.secondary">
+                  Play &amp; Process uses the selected mock ASR/PENNY path until Experimental Real ASR
+                  is enabled. No real transcription occurs and no audio is uploaded.
+                </Typography>
+
+                {!activeSession ? (
+                  <Button
+                    variant="contained"
+                    onClick={createSession}
+                    disabled={!activeAssetId}
+                    sx={{ alignSelf: 'flex-start' }}
+                  >
+                    Create Play-to-Process Session
+                  </Button>
+                ) : (
+                  <>
+                    {activeSession.status === 'AWAITING_HUMAN_REVIEW' && (
+                      <Alert severity="warning">
+                        Human intervention required: review PENNY transcript quality and sign off
+                        before attachment.
+                      </Alert>
+                    )}
+                    {activeSession.status === 'REVIEW_SIGNED_OFF' && (
+                      <Alert severity="info">
+                        Human intervention required: attach the reviewed transcript.
+                      </Alert>
+                    )}
+                    {activeSession.status === 'TRANSCRIPT_ATTACHED' && (
+                      <Alert severity="info">
+                        Human intervention required: process the attached transcript into incident
+                        context.
+                      </Alert>
+                    )}
+                    {activeSession.status === 'INCIDENT_PROCESSED' && (
+                      <Alert severity="info">
+                        Human intervention required: review Safety Gates before Mock CAD.
+                      </Alert>
+                    )}
+                    <RecordingProcessingSessionCard
+                      session={activeSession}
+                      audioAsset={activeSessionAsset}
+                      onStart={playAndProcess}
+                      onRefresh={refreshSession}
+                      onCompleteCheckpoint={sessionCheckpoint}
+                      onCompleteSession={completeSession}
+                      onCancel={cancelSession}
+                    />
+                  </>
+                )}
+              </Stack>
+            </CardContent>
+          </Card>
+        </>
+      )}
 
       {/* Optional — Generate Transcript with ASR Job (Phase 2C) */}
       <Typography variant="overline" color="text.secondary">

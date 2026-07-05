@@ -55,6 +55,7 @@ export interface MiiState {
   pennyTranscriptPackages: import('./types').PennyTranscriptPackage[];
   pennyReviewStates: import('./types').PennyReviewState[];
   demoPolicy: import('./types').MiiDemoPolicy;
+  recordingProcessingSessions: import('./types').RecordingProcessingSession[];
 }
 
 const SYSTEM_ACTOR = 'MII_lite engine';
@@ -808,6 +809,10 @@ export interface AddAudioAssetInput {
   objectUrl?: string;
   notes?: string;
   waveform?: AudioWaveformPoint[];
+  sourceLabel?: string;
+  sourceDevice?: string;
+  originalRecording?: boolean;
+  recordingProvenanceNote?: string;
 }
 
 export function addAudioAsset(draft: MiiState, input: AddAudioAssetInput): AudioAsset {
@@ -823,6 +828,10 @@ export function addAudioAsset(draft: MiiState, input: AddAudioAssetInput): Audio
     createdAt: nowIso(),
     status: 'UPLOADED',
     waveform: input.waveform,
+    sourceLabel: input.sourceLabel,
+    sourceDevice: input.sourceDevice,
+    originalRecording: input.originalRecording,
+    recordingProvenanceNote: input.recordingProvenanceNote,
   };
   draft.audioAssets.push(asset);
   return asset;
@@ -1045,6 +1054,7 @@ export function clearAudioIntake(draft: MiiState): void {
   draft.pennyPlans = [];
   draft.pennyTranscriptPackages = [];
   draft.pennyReviewStates = [];
+  draft.recordingProcessingSessions = [];
 }
 
 // --- Phase 2D: derive display-only audio metadata ------------------------

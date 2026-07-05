@@ -12,6 +12,7 @@ const SOURCE_LABEL: Record<AudioAsset['sourceType'], string> = {
   AUTHORIZED_RECORDING: 'Authorized Recording',
   SYNTHETIC_TTS: 'Synthetic TTS',
   MANUAL_PLACEHOLDER: 'Manual Placeholder',
+  BARIX_RECORDING: 'Barix-style Authorized Recording',
 };
 
 const STATUS_COLOR: Record<AudioAsset['status'], 'default' | 'info' | 'success'> = {

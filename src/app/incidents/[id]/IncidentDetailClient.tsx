@@ -19,6 +19,7 @@ import {
   usePennyPlans,
   usePennyTranscriptPackages,
   usePennyReviewStates,
+  useRecordingProcessingSessions,
 } from '@/lib/mii/store';
 import { IncidentStatusChip, ConfidenceChip } from '@/components/StatusChip';
 import IncidentContextBundleCard from '@/components/IncidentContextBundleCard';
@@ -49,6 +50,7 @@ export default function IncidentDetailClient({ id }: { id: string }) {
   const pennyPlans = usePennyPlans();
   const pennyPackages = usePennyTranscriptPackages();
   const pennyReviewStates = usePennyReviewStates();
+  const recordingSessions = useRecordingProcessingSessions();
   const [toast, setToast] = React.useState<string | null>(null);
 
   if (!incident) {
@@ -138,7 +140,11 @@ export default function IncidentDetailClient({ id }: { id: string }) {
           )}
           {(incident.transcriptReviewSnapshot ||
             transcriptReviewGate.status !== 'NOT_APPLICABLE') && (
-            <IncidentTranscriptReviewCard incident={incident} liveGate={transcriptReviewGate} />
+            <IncidentTranscriptReviewCard
+              incident={incident}
+              liveGate={transcriptReviewGate}
+              recordingSession={recordingSessions.find((s) => s.incidentId === id)}
+            />
           )}
           <TranscriptTimeline lines={incidentLines} />
           <AuditTimeline events={incidentAudit} title="Incident Audit Timeline" />

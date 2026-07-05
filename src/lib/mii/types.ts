@@ -154,7 +154,12 @@ export type AuditAction =
   | 'INCIDENT_TRANSCRIPT_REVIEW_LINKED'
   | 'INCIDENT_TRANSCRIPT_REVIEW_SNAPSHOT'
   | 'INCIDENT_TRANSCRIPT_SIGNOFF_RECORDED'
-  | 'DEMO_POLICY_UPDATED';
+  | 'DEMO_POLICY_UPDATED'
+  | 'RECORDING_PROCESSING_SESSION_CREATED'
+  | 'RECORDING_PROCESSING_STARTED'
+  | 'RECORDING_PROCESSING_CHECKPOINT_COMPLETED'
+  | 'RECORDING_PROCESSING_SESSION_COMPLETED'
+  | 'RECORDING_PROCESSING_SESSION_CANCELLED';
 
 export interface AuditEvent {
   id: string;
@@ -228,7 +233,8 @@ export type AudioSourceType =
   | 'SIMULATED_UPLOAD'
   | 'AUTHORIZED_RECORDING'
   | 'SYNTHETIC_TTS'
-  | 'MANUAL_PLACEHOLDER';
+  | 'MANUAL_PLACEHOLDER'
+  | 'BARIX_RECORDING';
 
 // Display-only waveform + timeline provenance (Phase 2D). Deterministic and
 // local; NOT forensic audio analysis and NOT derived from real audio content.
@@ -258,6 +264,11 @@ export interface AudioAsset {
   notes?: string;
   status: 'UPLOADED' | 'TRANSCRIPT_ATTACHED' | 'PROCESSED';
   waveform?: AudioWaveformPoint[];
+  // Phase 3A: Barix-style / authorized original recording provenance (local only).
+  sourceLabel?: string;
+  sourceDevice?: string;
+  originalRecording?: boolean;
+  recordingProvenanceNote?: string;
 }
 
 export interface AudioTranscriptAttachment {
@@ -578,4 +589,63 @@ export interface SignOffPolicyGateResult {
   signedOff: boolean;
   signedOffBy?: string;
   signedOffAt?: string;
+}
+
+// --- Phase 3A: Barix-style recording intake + Play-to-Process session ---
+// A guided processing session over an authorized original recording. Automated
+// preparation (mock ASR/PENNY) runs up to explicit human checkpoints — sign-off,
+// attach, process, safety-gate review, mock CAD, audit export stay human-driven.
+
+export type RecordingProcessingSessionStatus =
+  | 'DRAFT'
+  | 'READY'
+  | 'PLAYING'
+  | 'PROCESSING_STARTED'
+  | 'PENNY_PLAN_CREATED'
+  | 'AWAITING_HUMAN_REVIEW'
+  | 'REVIEW_SIGNED_OFF'
+  | 'TRANSCRIPT_ATTACHED'
+  | 'INCIDENT_PROCESSED'
+  | 'COMPLETED'
+  | 'CANCELLED'
+  | 'FAILED';
+
+export type HumanCheckpointKind =
+  | 'START_PROCESSING'
+  | 'REVIEW_TRANSCRIPT'
+  | 'SIGN_OFF_REVIEW'
+  | 'ATTACH_TRANSCRIPT'
+  | 'PROCESS_INCIDENT'
+  | 'REVIEW_SAFETY_GATES'
+  | 'SUBMIT_MOCK_CAD'
+  | 'EXPORT_AUDIT';
+
+export interface HumanCheckpoint {
+  id: string;
+  kind: HumanCheckpointKind;
+  label: string;
+  required: boolean;
+  completed: boolean;
+  completedAt?: string;
+  actor?: string;
+  summary?: string;
+}
+
+export interface RecordingProcessingSession {
+  id: string;
+  audioAssetId: string;
+  status: RecordingProcessingSessionStatus;
+  createdAt: string;
+  updatedAt: string;
+  startedAt?: string;
+  completedAt?: string;
+  pennyPlanId?: string;
+  asrJobId?: string;
+  asrResultId?: string;
+  transcriptPackageId?: string;
+  reviewStateId?: string;
+  attachmentId?: string;
+  incidentId?: string;
+  checkpoints: HumanCheckpoint[];
+  notes?: string;
 }
