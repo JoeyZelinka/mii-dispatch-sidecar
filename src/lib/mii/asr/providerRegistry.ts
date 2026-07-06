@@ -13,6 +13,12 @@ export interface AsrProviderDefinition {
   external: boolean;
   supportsScenario: boolean;
   supportsFreeform: boolean;
+  // Phase 3B — experimental local/offline capability metadata (optional so
+  // existing mock providers keep working unchanged).
+  experimental?: boolean;
+  requiresLocalModel?: boolean;
+  externalNetwork?: boolean;
+  supportsAudioFile?: boolean;
 }
 
 export const ASR_PROVIDER_REGISTRY: AsrProviderDefinition[] = [
@@ -44,6 +50,20 @@ export const ASR_PROVIDER_REGISTRY: AsrProviderDefinition[] = [
     external: false,
     supportsScenario: false,
     supportsFreeform: false,
+  },
+  {
+    provider: 'LOCAL_OFFLINE_WHISPER',
+    label: 'Local Offline Whisper (Experimental)',
+    description:
+      'Runs local browser ASR from local model assets only. No cloud ASR or external upload.',
+    realAsr: true,
+    external: false,
+    supportsScenario: false,
+    supportsFreeform: false,
+    experimental: true,
+    requiresLocalModel: true,
+    externalNetwork: false,
+    supportsAudioFile: true,
   },
   {
     provider: 'UNCONFIGURED',

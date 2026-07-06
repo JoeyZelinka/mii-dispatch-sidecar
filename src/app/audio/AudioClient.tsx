@@ -33,6 +33,13 @@ import PennyPlanCard from '@/components/PennyPlanCard';
 import PennyReviewCard from '@/components/PennyReviewCard';
 import DemoPolicyCard from '@/components/DemoPolicyCard';
 import RecordingProcessingSessionCard from '@/components/RecordingProcessingSessionCard';
+import LocalOfflineAsrCard from '@/components/LocalOfflineAsrCard';
+import { checkLocalOfflineAsrAssets } from '@/lib/mii/asr/localOfflineAsrAssets';
+import { runLocalOfflineWhisperAsr } from '@/lib/mii/asr/localOfflineWhisperAdapter';
+import type {
+  LocalOfflineAsrCapabilityCheck,
+  LocalOfflineAsrStatus,
+} from '@/lib/mii/asr/localOfflineTypes';
 import {
   miiStore,
   createPlaceholderAudioAssetInput,
@@ -116,6 +123,13 @@ export default function AudioClient() {
 
   // Play-to-Process recording session state (Phase 3A).
   const [activeSessionId, setActiveSessionId] = React.useState<string | undefined>();
+
+  // Local/offline experimental ASR state (Phase 3B).
+  const [localCapability, setLocalCapability] = React.useState<LocalOfflineAsrCapabilityCheck | undefined>();
+  const [localAsrStatus, setLocalAsrStatus] = React.useState<LocalOfflineAsrStatus>('READY');
+  const [localAsrSummary, setLocalAsrSummary] = React.useState<string | undefined>();
+  const [localAsrError, setLocalAsrError] = React.useState<string | undefined>();
+  const [localAsrResultId, setLocalAsrResultId] = React.useState<string | undefined>();
 
   const [toast, setToast] = React.useState<string | null>(null);
 
@@ -444,7 +458,87 @@ export default function AudioClient() {
     setToast('Play-to-Process session created.');
   };
 
-  const playAndProcess = () => {
+  // --- Local/offline ASR helpers (Phase 3B) ---
+  const checkLocalModel = async () => {
+    const cap = await checkLocalOfflineAsrAssets();
+    setLocalCapability(cap);
+    setLocalAsrStatus(cap.status);
+    miiStore.recordLocalOfflineAsrModelChecked(cap.available, cap.status);
+  };
+
+  // Auto-check model assets when the local provider is selected.
+  React.useEffect(() => {
+    if (pennyProvider === 'LOCAL_OFFLINE_WHISPER' && !localCapability) {
+      void checkLocalModel();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pennyProvider]);
+
+  // Run local/offline ASR for a session's audio, hand result to its PENNY plan.
+  const runLocalForSession = async (sessionId: string, planId: string, audioAssetId: string) => {
+    const asset = assets.find((a) => a.id === audioAssetId);
+    if (!asset?.objectUrl) {
+      setLocalAsrStatus('FAILED');
+      setLocalAsrError('No playable recording is available for local ASR.');
+      setToast('No playable recording for local ASR.');
+      return;
+    }
+    setLocalAsrError(undefined);
+    setLocalAsrResultId(undefined);
+    miiStore.recordLocalOfflineAsrStarted(asset.id, asset.filename);
+    setLocalAsrStatus('LOADING_MODEL');
+
+    let blob: Blob;
+    try {
+      blob = await (await fetch(asset.objectUrl)).blob();
+    } catch {
+      const msg = 'Could not read the local recording for transcription.';
+      miiStore.recordLocalOfflineAsrFailed({ audioAssetId: asset.id, filename: asset.filename, errorMessage: msg });
+      setLocalAsrStatus('FAILED');
+      setLocalAsrError(msg);
+      setToast(msg);
+      return;
+    }
+
+    const res = await runLocalOfflineWhisperAsr({
+      audioBlob: blob,
+      audioAssetId: asset.id,
+      filename: asset.filename,
+      onProgress: (e) => {
+        setLocalAsrStatus(e.status);
+        setLocalAsrSummary(e.summary);
+      },
+    });
+
+    if (res.status === 'COMPLETED') {
+      const out = miiStore.completeLocalOfflineAsrForPlan({
+        planId,
+        audioAssetId: asset.id,
+        transcriptText: res.transcriptText ?? '',
+        segments: res.segments,
+        averageConfidence: res.averageConfidence,
+        durationMs: res.durationMs,
+        filename: asset.filename,
+      });
+      setLocalAsrResultId(out?.resultId);
+      setActivePennyPlanId(planId);
+      miiStore.refreshRecordingProcessingSessionLinks(sessionId);
+      setLocalAsrStatus('COMPLETED');
+      setToast('Local ASR complete — awaiting human transcript review.');
+    } else {
+      miiStore.recordLocalOfflineAsrFailed({
+        audioAssetId: asset.id,
+        filename: asset.filename,
+        errorMessage: res.errorMessage ?? 'Local ASR failed.',
+        durationMs: res.durationMs,
+      });
+      setLocalAsrStatus('FAILED');
+      setLocalAsrError(res.errorMessage);
+      setToast(res.errorMessage ?? 'Local ASR failed.');
+    }
+  };
+
+  const playAndProcess = async () => {
     if (!activeSession || !activeSessionAsset) return;
     // Local playback only (best-effort; requires the user gesture we already have).
     if (activeSessionAsset.objectUrl) {
@@ -455,7 +549,6 @@ export default function AudioClient() {
       }
     }
     miiStore.startRecordingProcessingSession(activeSession.id);
-    // Automated preparation via the selected mock ASR/PENNY path — no real ASR.
     const plan = miiStore.createPennyPlan({
       audioAssetId: activeSession.audioAssetId,
       provider: pennyProvider,
@@ -464,10 +557,17 @@ export default function AudioClient() {
     });
     setActivePennyPlanId(plan.id);
     miiStore.linkRecordingSessionToPennyPlan(activeSession.id, plan.id);
-    miiStore.pennyRunAsrToCompletion(plan.id);
-    miiStore.evaluateAsrResultForPenny(plan.id);
-    miiStore.refreshRecordingProcessingSessionLinks(activeSession.id);
-    setToast('Play & Process complete — awaiting human transcript review.');
+
+    if (pennyProvider === 'LOCAL_OFFLINE_WHISPER') {
+      // Experimental local/offline ASR path — real browser transcription.
+      await runLocalForSession(activeSession.id, plan.id, activeSession.audioAssetId);
+    } else {
+      // Mock ASR/PENNY preparation (Phase 3A behavior).
+      miiStore.pennyRunAsrToCompletion(plan.id);
+      miiStore.evaluateAsrResultForPenny(plan.id);
+      miiStore.refreshRecordingProcessingSessionLinks(activeSession.id);
+      setToast('Play & Process complete — awaiting human transcript review.');
+    }
   };
 
   const refreshSession = () => {
@@ -507,6 +607,10 @@ export default function AudioClient() {
     setActiveJobId(undefined);
     setActivePennyPlanId(undefined);
     setActiveSessionId(undefined);
+    setLocalAsrStatus('READY');
+    setLocalAsrSummary(undefined);
+    setLocalAsrError(undefined);
+    setLocalAsrResultId(undefined);
     setTranscriptText('');
     setAttachScenarioId(undefined);
     setFilePreview(null);
@@ -691,9 +795,31 @@ export default function AudioClient() {
                   incident processing, safety gate review, Mock CAD submission, and audit export.
                 </Typography>
                 <Typography variant="caption" color="text.secondary">
-                  Play &amp; Process uses the selected mock ASR/PENNY path until Experimental Real ASR
-                  is enabled. No real transcription occurs and no audio is uploaded.
+                  {pennyProvider === 'LOCAL_OFFLINE_WHISPER'
+                    ? 'Play & Process will play the authorized recording, run local/offline ASR preparation, and stop at PENNY human review.'
+                    : 'Play & Process uses the selected mock ASR/PENNY path until Experimental Real ASR is enabled. No real transcription occurs and no audio is uploaded.'}
                 </Typography>
+
+                {pennyProvider === 'LOCAL_OFFLINE_WHISPER' && (
+                  <LocalOfflineAsrCard
+                    capability={localCapability}
+                    status={localAsrStatus}
+                    progressSummary={localAsrSummary}
+                    errorMessage={localAsrError}
+                    transcriptResultId={localAsrResultId}
+                    canRun={Boolean(activeSession && activePennyPlanId)}
+                    onCheckModel={checkLocalModel}
+                    onRunAsr={() => {
+                      if (activeSession && activePennyPlanId) {
+                        void runLocalForSession(
+                          activeSession.id,
+                          activePennyPlanId,
+                          activeSession.audioAssetId
+                        );
+                      }
+                    }}
+                  />
+                )}
 
                 {!activeSession ? (
                   <Button

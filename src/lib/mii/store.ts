@@ -79,6 +79,14 @@ import {
   refreshRecordingProcessingSessionLinks as engineRefreshRecordingSession,
   startRecordingProcessingSession as engineStartRecordingSession,
 } from './recordingProcessing';
+import {
+  type CompleteLocalOfflineAsrInput,
+  completeLocalOfflineAsrForPlan as engineCompleteLocalAsr,
+  recordLocalOfflineAsrFailed as engineRecordLocalAsrFailed,
+  recordLocalOfflineAsrModelChecked as engineRecordLocalAsrModelChecked,
+  recordLocalOfflineAsrStarted as engineRecordLocalAsrStarted,
+} from './asr/localOfflineHandoff';
+import type { LocalOfflineAsrStatus } from './asr/localOfflineTypes';
 
 const STORAGE_KEY = 'mii_lite_state_v1';
 const REVIEWER = 'Dispatcher (you)';
@@ -364,6 +372,25 @@ export const miiStore = {
   },
   cancelRecordingProcessingSession(sessionId: string) {
     return update((d) => engineCancelRecordingSession(d, sessionId, REVIEWER));
+  },
+
+  // --- Phase 3B local/offline ASR handoff actions ---
+  recordLocalOfflineAsrModelChecked(available: boolean, status: LocalOfflineAsrStatus) {
+    update((d) => engineRecordLocalAsrModelChecked(d, { available, status, actor: REVIEWER }));
+  },
+  recordLocalOfflineAsrStarted(audioAssetId: string, filename?: string) {
+    update((d) => engineRecordLocalAsrStarted(d, { audioAssetId, filename, actor: REVIEWER }));
+  },
+  recordLocalOfflineAsrFailed(input: {
+    audioAssetId: string;
+    filename?: string;
+    errorMessage: string;
+    durationMs?: number;
+  }) {
+    update((d) => engineRecordLocalAsrFailed(d, { ...input, actor: REVIEWER }));
+  },
+  completeLocalOfflineAsrForPlan(input: Omit<CompleteLocalOfflineAsrInput, 'actor'>) {
+    return update((d) => engineCompleteLocalAsr(d, { ...input, actor: REVIEWER }));
   },
   clearAudioIntake() {
     update((d) => engineClearAudioIntake(d));

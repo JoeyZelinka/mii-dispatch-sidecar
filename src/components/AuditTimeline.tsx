@@ -48,6 +48,10 @@ const actionColor: Partial<Record<AuditAction, 'default' | 'primary' | 'success'
   RECORDING_PROCESSING_CHECKPOINT_COMPLETED: 'default',
   RECORDING_PROCESSING_SESSION_COMPLETED: 'success',
   RECORDING_PROCESSING_SESSION_CANCELLED: 'warning',
+  LOCAL_OFFLINE_ASR_MODEL_CHECKED: 'default',
+  LOCAL_OFFLINE_ASR_TRANSCRIPTION_STARTED: 'info',
+  LOCAL_OFFLINE_ASR_TRANSCRIPTION_COMPLETED: 'success',
+  LOCAL_OFFLINE_ASR_TRANSCRIPTION_FAILED: 'error',
 };
 
 export default function AuditTimeline({

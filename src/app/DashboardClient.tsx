@@ -104,10 +104,10 @@ export default function DashboardClient() {
           <Box sx={{ flexGrow: 1, minWidth: 240 }}>
             <Typography variant="h6">Recorded Audio Intake</Typography>
             <Typography variant="body2" color="text.secondary">
-              Barix-style recording intake and Play-to-Process human checkpoints, PENNY human
-              review, reviewer sign-off, configurable sign-off policy, local audit export with
-              SHA-256 verification, transcript review gate, and transcript-first processing. No real
-              ASR or external services.
+              Barix-style recording intake and Play-to-Process human checkpoints, an experimental
+              local/offline ASR provider (no cloud), PENNY human review, reviewer sign-off,
+              configurable sign-off policy, local audit export with SHA-256 verification, transcript
+              review gate, and transcript-first processing. No cloud ASR or external services.
             </Typography>
           </Box>
           <Button

@@ -62,6 +62,16 @@ import {
   refreshRecordingProcessingSessionLinks,
   startRecordingProcessingSession,
 } from '@/lib/mii/recordingProcessing';
+import { ASR_PROVIDER_REGISTRY, getAsrProviderDefinition } from '@/lib/mii/asr/providerRegistry';
+import {
+  LOCAL_OFFLINE_ASR_MODEL_CONFIG,
+  checkLocalOfflineAsrAssets,
+} from '@/lib/mii/asr/localOfflineAsrAssets';
+import {
+  completeLocalOfflineAsrForPlan,
+  recordLocalOfflineAsrFailed,
+  recordLocalOfflineAsrStarted,
+} from '@/lib/mii/asr/localOfflineHandoff';
 import {
   createDeterministicWaveform,
   estimateDurationFromSegments,
@@ -1448,6 +1458,118 @@ check('Session completion and cancellation are audited', () => {
 });
 
 // =========================================================================
+// Phase 3B — experimental local/offline ASR provider + handoff
+// =========================================================================
+
+check('Local offline ASR provider is registered as experimental and local', () => {
+  const def = ASR_PROVIDER_REGISTRY.find((p) => p.provider === 'LOCAL_OFFLINE_WHISPER');
+  ok(!!def, 'provider registered');
+  eq(def!.label, 'Local Offline Whisper (Experimental)', 'label');
+  eq(def!.experimental, true, 'experimental');
+  eq(def!.externalNetwork, false, 'externalNetwork false');
+  eq(def!.requiresLocalModel, true, 'requiresLocalModel true');
+  // Not default: MOCK_SCENARIO is first in the registry.
+  eq(ASR_PROVIDER_REGISTRY[0].provider, 'MOCK_SCENARIO', 'default provider is a mock');
+  // getAsrProviderDefinition resolves it.
+  eq(getAsrProviderDefinition('LOCAL_OFFLINE_WHISPER').provider, 'LOCAL_OFFLINE_WHISPER', 'lookup');
+});
+
+check('Local offline ASR model config disables remote models', () => {
+  eq(LOCAL_OFFLINE_ASR_MODEL_CONFIG.provider, 'LOCAL_OFFLINE_WHISPER', 'provider');
+  eq(LOCAL_OFFLINE_ASR_MODEL_CONFIG.localModelPath, '/models/', 'localModelPath');
+  eq(LOCAL_OFFLINE_ASR_MODEL_CONFIG.remoteModelsAllowed, false, 'remoteModelsAllowed false');
+  eq(LOCAL_OFFLINE_ASR_MODEL_CONFIG.experimental, true, 'experimental');
+});
+
+function barixPlan(s: MiiState): { assetId: string; planId: string } {
+  const assetId = barixAudio(s);
+  const plan = createPennyPlan(s, { audioAssetId: assetId, provider: 'LOCAL_OFFLINE_WHISPER', actor: ACTOR });
+  return { assetId, planId: plan.id };
+}
+
+check('Local ASR completed handoff creates ASR result and PENNY package', () => {
+  const s = fresh();
+  const { assetId, planId } = barixPlan(s);
+  const out = completeLocalOfflineAsrForPlan(s, {
+    planId,
+    audioAssetId: assetId,
+    transcriptText: 'Unit 5 responding to a 3-41 at 210 174th Street.',
+    segments: [{ id: 'x', text: 'Unit 5 responding to a 3-41 at 210 174th Street.' }],
+    durationMs: 1200,
+    filename: 'barix-clip.wav',
+    actor: ACTOR,
+  })!;
+  ok(!!out, 'handoff returned');
+  const result = s.asrTranscriptResults.find((r) => r.id === out.resultId)!;
+  ok(!!result, 'AsrTranscriptResult exists');
+  eq(result.provider, 'LOCAL_OFFLINE_WHISPER', 'provider LOCAL_OFFLINE_WHISPER');
+  const plan = s.pennyPlans.find((p) => p.id === planId)!;
+  eq(plan.asrResultId, out.resultId, 'plan links result');
+  ok(!!plan.transcriptPackageId, 'plan links package');
+  ok(!!out.packageId, 'package created');
+  eq(s.audioTranscriptAttachments.length, 0, 'no attachment auto-created');
+  eq(s.incidents.length, 0, 'no incident auto-processed');
+});
+
+check('Local ASR empty transcript is blocked / needs review', () => {
+  const s = fresh();
+  const { assetId, planId } = barixPlan(s);
+  const out = completeLocalOfflineAsrForPlan(s, {
+    planId,
+    audioAssetId: assetId,
+    transcriptText: '',
+    durationMs: 500,
+    actor: ACTOR,
+  })!;
+  const pkg = s.pennyTranscriptPackages.find((p) => p.id === out.packageId)!;
+  ok(!!pkg, 'package exists');
+  ok(!pkg.readyForAttachment, 'empty transcript not ready for attachment');
+});
+
+check('Play-to-Process local ASR stops at human review', () => {
+  const s = fresh();
+  const assetId = barixAudio(s);
+  const session = createRecordingProcessingSession(s, { audioAssetId: assetId, actor: ACTOR });
+  startRecordingProcessingSession(s, { sessionId: session.id, actor: ACTOR });
+  const plan = createPennyPlan(s, { audioAssetId: assetId, provider: 'LOCAL_OFFLINE_WHISPER', actor: ACTOR });
+  linkRecordingSessionToPennyPlan(s, { sessionId: session.id, pennyPlanId: plan.id, actor: ACTOR });
+  completeLocalOfflineAsrForPlan(s, {
+    planId: plan.id,
+    audioAssetId: assetId,
+    transcriptText: 'You have a 3-41 at 210 174th Street.',
+    segments: [{ id: 'x', text: 'You have a 3-41 at 210 174th Street.' }],
+    durationMs: 900,
+    actor: ACTOR,
+  });
+  refreshRecordingProcessingSessionLinks(s, session.id);
+  const sess = s.recordingProcessingSessions.find((x) => x.id === session.id)!;
+  eq(sess.status, 'AWAITING_HUMAN_REVIEW', 'status AWAITING_HUMAN_REVIEW');
+  ok(!sess.checkpoints.find((c) => c.kind === 'SIGN_OFF_REVIEW')!.completed, 'SIGN_OFF not completed');
+  ok(!sess.checkpoints.find((c) => c.kind === 'ATTACH_TRANSCRIPT')!.completed, 'ATTACH not completed');
+  ok(!sess.checkpoints.find((c) => c.kind === 'PROCESS_INCIDENT')!.completed, 'PROCESS not completed');
+});
+
+check('Local ASR audit events are recorded', () => {
+  const s = fresh();
+  const { assetId, planId } = barixPlan(s);
+  recordLocalOfflineAsrStarted(s, { audioAssetId: assetId, filename: 'barix-clip.wav', actor: ACTOR });
+  completeLocalOfflineAsrForPlan(s, {
+    planId,
+    audioAssetId: assetId,
+    transcriptText: 'Test transcript with a 3-41.',
+    segments: [{ id: 'x', text: 'Test transcript with a 3-41.' }],
+    durationMs: 700,
+    actor: ACTOR,
+  });
+  const s2 = fresh();
+  const a2 = barixAudio(s2);
+  recordLocalOfflineAsrFailed(s2, { audioAssetId: a2, errorMessage: 'model missing', durationMs: 10, actor: ACTOR });
+  ok(s.audit.some((a) => a.action === 'LOCAL_OFFLINE_ASR_TRANSCRIPTION_STARTED'), 'audit STARTED');
+  ok(s.audit.some((a) => a.action === 'LOCAL_OFFLINE_ASR_TRANSCRIPTION_COMPLETED'), 'audit COMPLETED');
+  ok(s2.audit.some((a) => a.action === 'LOCAL_OFFLINE_ASR_TRANSCRIPTION_FAILED'), 'audit FAILED');
+});
+
+// =========================================================================
 // Phase 2J — tamper-evident audit export verification (async)
 // =========================================================================
 
@@ -1525,6 +1647,15 @@ async function mainAsync(): Promise<void> {
   await checkAsync('verifyIncidentAuditExport INVALID_FORMAT for non-export object', async () => {
     const v = await verifyIncidentAuditExport({ hello: 'world' });
     eq(v.status, 'INVALID_FORMAT', 'status INVALID_FORMAT');
+  });
+
+  await checkAsync('Missing local ASR model fails safely (server-side)', async () => {
+    // Runs under Node (no window) → must return UNAVAILABLE, never throw.
+    const cap = await checkLocalOfflineAsrAssets();
+    ok(cap.status === 'UNAVAILABLE' || cap.status === 'MODEL_MISSING', `safe status (got ${cap.status})`);
+    eq(cap.available, false, 'not available server-side');
+    eq(cap.modelId, 'Xenova/whisper-tiny.en', 'model id');
+    eq(cap.localModelPath, '/models/', 'local path');
   });
 
   await checkAsync('signed export preserves Phase 2I provenance', async () => {
