@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(xargs -0 du -h)",
+      "Bash(CI=true npm run build)",
+      "Bash(ls -la /Users/joeyzelinka/Desktop/c0d3/mii-dispatch-sidecar/.next*)",
+      "Bash(grep -r \"@huggingface\\\\|transformers\" /Users/joeyzelinka/Desktop/c0d3/mii-dispatch-sidecar/.next/server/chunks/*.js)",
+      "Bash(grep -l \"@huggingface\\\\|transformers\" /Users/joeyzelinka/Desktop/c0d3/mii-dispatch-sidecar/.next/static/chunks/*.js)",
+      "Bash(python3 -m json.tool)",
+      "Bash(python3 -c \":*)",
+      "Bash(du -h node_modules/onnxruntime-node/bin/napi-v6/*/*/*)",
+      "Bash(du -sh node_modules/onnxruntime-web/dist/*)",
+      "Bash(for nft in .next/server/app/*/page.js.nft.json .next/server/middleware.js.nft.json)",
+      "Bash(do python3 -c \" import json, os, sys data = json.load\\(open\\(''$nft''\\)\\) files = data.get\\(''files'', []\\) nft_dir = os.path.dirname\\(''$nft''\\) total = sum\\(os.path.getsize\\(os.path.normpath\\(os.path.join\\(nft_dir, f\\)\\)\\) for f in files if os.path.exists\\(os.path.normpath\\(os.path.join\\(nft_dir, f\\)\\)\\)\\) print\\(f'' {\"\"$nft\"\":60s} {len\\(files\\):3d} files {total/1024/1024:.1f} MB''\\) \")"
+    ]
+  }
+}
