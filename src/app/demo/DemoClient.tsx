@@ -106,6 +106,16 @@ export default function DemoClient() {
         Simulated Data Only — no real radio, CAD, agency systems, or external APIs.
       </Alert>
 
+      <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 2 }}>
+        <Link href="/audio" style={{ color: 'inherit' }}>
+          Audio Intake
+        </Link>{' '}
+        now includes Barix-style recording intake with Play-to-Process (making human intervention
+        points explicit), an experimental local/offline ASR provider (browser-only, no cloud), PENNY
+        review, configurable sign-off policy, transcript review gates, and local JSON audit export
+        with hash verification. Cloud ASR is not enabled.
+      </Typography>
+
       <Alert severity="info" sx={{ mb: 3 }}>
         <AlertTitle>How to use this demo</AlertTitle>
         <Box component="ol" sx={{ m: 0, pl: 2.5 }}>

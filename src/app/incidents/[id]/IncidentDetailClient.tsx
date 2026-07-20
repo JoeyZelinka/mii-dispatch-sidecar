@@ -12,6 +12,14 @@ import {
   useAudit,
   useTranscriptLines,
   useMockCadPayload,
+  useAudioAssets,
+  useAudioTranscriptAttachments,
+  useAsrTranscriptResults,
+  useAsrJobs,
+  usePennyPlans,
+  usePennyTranscriptPackages,
+  usePennyReviewStates,
+  useRecordingProcessingSessions,
 } from '@/lib/mii/store';
 import { IncidentStatusChip, ConfidenceChip } from '@/components/StatusChip';
 import IncidentContextBundleCard from '@/components/IncidentContextBundleCard';
@@ -23,7 +31,10 @@ import HumanReviewActions from '@/components/HumanReviewActions';
 import MockCadPayloadCard from '@/components/MockCadPayloadCard';
 import SafetyGatesCard from '@/components/SafetyGatesCard';
 import ConflictResolutionCard from '@/components/ConflictResolutionCard';
-import { submitBlockReasons, hasUnconfirmedSensitive } from '@/lib/mii/safetyGates';
+import AudioProvenanceCard from '@/components/AudioProvenanceCard';
+import IncidentTranscriptReviewCard from '@/components/IncidentTranscriptReviewCard';
+import IncidentAuditExportButton from '@/components/IncidentAuditExportButton';
+import { hasUnconfirmedSensitive, evaluateIncidentSafetyReadiness } from '@/lib/mii/safetyGates';
 
 export default function IncidentDetailClient({ id }: { id: string }) {
   const incident = useIncident(id);
@@ -32,6 +43,14 @@ export default function IncidentDetailClient({ id }: { id: string }) {
   const audit = useAudit();
   const allLines = useTranscriptLines();
   const payload = useMockCadPayload(id);
+  const audioAssets = useAudioAssets();
+  const audioAttachments = useAudioTranscriptAttachments();
+  const asrResults = useAsrTranscriptResults();
+  const asrJobs = useAsrJobs();
+  const pennyPlans = usePennyPlans();
+  const pennyPackages = usePennyTranscriptPackages();
+  const pennyReviewStates = usePennyReviewStates();
+  const recordingSessions = useRecordingProcessingSessions();
   const [toast, setToast] = React.useState<string | null>(null);
 
   if (!incident) {
@@ -50,10 +69,20 @@ export default function IncidentDetailClient({ id }: { id: string }) {
   const recommendations = allRecs.filter((r) => r.incidentId === id);
   const incidentLines = allLines.filter((l) => incident.transcriptLineIds.includes(l.id));
   const incidentAudit = audit.filter((e) => e.incidentId === id);
+  const linkedAudio = audioAttachments.filter((a) => a.activeIncidentId === id);
   const unconfirmedSensitive = hasUnconfirmedSensitive(incident);
-  const blockReasons = submitBlockReasons(incident);
+  // Phase 2G/2I — fold the transcript review + sign-off policy gates into readiness.
+  const transcriptReviewGate = miiStore.transcriptReviewGate(id);
+  const signOffPolicyGate = miiStore.signOffPolicyGate(id);
+  const readiness = evaluateIncidentSafetyReadiness(
+    incident,
+    transcriptReviewGate,
+    signOffPolicyGate
+  );
+  const blockReasons = readiness.blockingReasons;
 
   const handleSubmitCad = () => {
+    if (!readiness.canSubmit) return;
     miiStore.submitMockCad(id, { includeSensitive: true });
     setToast('MOCK CAD payload built (NOT SENT). No external system was contacted.');
   };
@@ -97,8 +126,29 @@ export default function IncidentDetailClient({ id }: { id: string }) {
             onReject={(fid) => miiStore.rejectField(id, fid)}
             onConfirmSensitive={(fid) => miiStore.confirmSensitiveField(id, fid)}
           />
+          {linkedAudio.length > 0 && (
+            <AudioProvenanceCard
+              attachments={linkedAudio}
+              assets={audioAssets}
+              asrResults={asrResults}
+              asrJobs={asrJobs}
+              pennyPlans={pennyPlans}
+              pennyPackages={pennyPackages}
+              pennyReviewStates={pennyReviewStates}
+              incident={incident}
+            />
+          )}
+          {(incident.transcriptReviewSnapshot ||
+            transcriptReviewGate.status !== 'NOT_APPLICABLE') && (
+            <IncidentTranscriptReviewCard
+              incident={incident}
+              liveGate={transcriptReviewGate}
+              recordingSession={recordingSessions.find((s) => s.incidentId === id)}
+            />
+          )}
           <TranscriptTimeline lines={incidentLines} />
           <AuditTimeline events={incidentAudit} title="Incident Audit Timeline" />
+          <IncidentAuditExportButton incidentId={id} />
         </Box>
 
         {/* Right column */}
@@ -109,17 +159,29 @@ export default function IncidentDetailClient({ id }: { id: string }) {
             units={units}
             onAssign={(unitId) => miiStore.assignUnit(id, unitId)}
           />
-          <SafetyGatesCard incident={incident} units={units} payload={payload} />
+          <SafetyGatesCard
+            incident={incident}
+            units={units}
+            payload={payload}
+            transcriptReviewGate={transcriptReviewGate}
+            signOffPolicyGate={signOffPolicyGate}
+          />
           <HumanReviewActions
             incident={incident}
             blockReasons={blockReasons}
             hasUnconfirmedSensitive={unconfirmedSensitive}
+            warnings={readiness.warnings}
+            transcriptSignedOffBy={incident.transcriptReviewSnapshot?.signedOffBy}
             onConfirmAsr={() => miiStore.confirmAsr(id)}
             onApplyFields={() => miiStore.applySuggestedFields(id)}
             onSubmitCad={handleSubmitCad}
             onClose={() => miiStore.closeIncident(id)}
           />
-          <MockCadPayloadCard payload={payload} hasUnconfirmedSensitive={unconfirmedSensitive} />
+          <MockCadPayloadCard
+            payload={payload}
+            hasUnconfirmedSensitive={unconfirmedSensitive}
+            transcriptReviewStatus={transcriptReviewGate.status}
+          />
         </Box>
       </Box>
 

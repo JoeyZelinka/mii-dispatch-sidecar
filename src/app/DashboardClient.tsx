@@ -15,6 +15,7 @@ import {
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import SlideshowIcon from '@mui/icons-material/Slideshow';
+import GraphicEqIcon from '@mui/icons-material/GraphicEq';
 import { SCENARIOS } from '@/lib/mii/seed';
 import { miiStore, useIncidents, useAudit, useUnits } from '@/lib/mii/store';
 import ScenarioCard from '@/components/ScenarioCard';
@@ -85,6 +86,39 @@ export default function DashboardClient() {
             startIcon={<SlideshowIcon />}
           >
             Open Guided Demo
+          </Button>
+        </CardContent>
+      </Card>
+
+      <Card
+        sx={{
+          mb: 4,
+          borderColor: 'secondary.main',
+          borderWidth: 1,
+          borderStyle: 'solid',
+          background: 'linear-gradient(90deg, rgba(206,147,216,0.10), rgba(206,147,216,0.02))',
+        }}
+      >
+        <CardContent sx={{ display: 'flex', alignItems: 'center', gap: 2, flexWrap: 'wrap' }}>
+          <GraphicEqIcon color="secondary" sx={{ fontSize: 36 }} />
+          <Box sx={{ flexGrow: 1, minWidth: 240 }}>
+            <Typography variant="h6">Recorded Audio Intake</Typography>
+            <Typography variant="body2" color="text.secondary">
+              Barix-style recording intake and Play-to-Process human checkpoints, an experimental
+              local/offline ASR provider (no cloud), PENNY human review, reviewer sign-off,
+              configurable sign-off policy, local audit export with SHA-256 verification, transcript
+              review gate, and transcript-first processing. No cloud ASR or external services.
+            </Typography>
+          </Box>
+          <Button
+            component={Link}
+            href="/audio"
+            variant="contained"
+            color="secondary"
+            size="large"
+            startIcon={<GraphicEqIcon />}
+          >
+            Open Audio Intake
           </Button>
         </CardContent>
       </Card>

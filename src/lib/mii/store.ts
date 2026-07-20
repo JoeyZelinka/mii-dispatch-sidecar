@@ -2,10 +2,21 @@
 
 import { useSyncExternalStore } from 'react';
 import type {
+  AsrJob,
+  AsrProvider,
+  AsrTranscriptResult,
+  AudioAsset,
+  AudioTranscriptAttachment,
   AuditEvent,
   IncidentContext,
   MockCadPayload,
+  PennyReviewActionType,
+  PennyReviewState,
+  PennyTranscriptPackage,
+  PennyTranscriptionPlan,
   ReplayState,
+  SignOffPolicyGateResult,
+  TranscriptReviewGateResult,
   TranscriptLine,
   Unit,
   UnitRecommendation,
@@ -13,20 +24,69 @@ import type {
 import { SEED_UNITS } from './seed';
 import type { MockCadOptions } from './mockCad';
 import {
+  type AddAudioAssetInput,
   type MiiState,
+  addAudioAsset as engineAddAudioAsset,
+  advanceAsrJob as engineAdvanceAsrJob,
   applySuggestedFields as engineApplyFields,
   assignUnit as engineAssignUnit,
+  attachAsrResultToAudio as engineAttachAsrResult,
+  attachTranscriptToAudio as engineAttachTranscript,
+  cancelAsrJob as engineCancelAsrJob,
+  clearAudioIntake as engineClearAudioIntake,
   clearScenarioReplay as engineClearReplay,
   closeIncident as engineCloseIncident,
   confirmAsr as engineConfirmAsr,
   confirmSensitiveField as engineConfirmSensitive,
+  processAudioTranscriptAttachment as engineProcessAudioAttachment,
   processScenarioReplayNext as engineReplayNext,
+  requestAsrJob as engineRequestAsrJob,
+  runAsrJobToCompletion as engineRunAsrJobToCompletion,
+  runMockAsrForAudio as engineRunMockAsr,
   rejectField as engineRejectField,
   resolveFieldConflict as engineResolveConflict,
   runScenario as engineRunScenario,
   startScenarioReplay as engineStartReplay,
   submitMockCad as engineSubmitMockCad,
 } from './processor';
+import {
+  type PennyQualityGateResult,
+  createPennyPlan as engineCreatePennyPlan,
+  evaluateAsrResultForPenny as engineEvaluatePenny,
+  evaluatePennyQualityGate as engineEvaluateQualityGate,
+  evaluatePennyReviewReadiness as engineEvaluateReviewReadiness,
+  getOrCreatePennyReviewState as engineGetOrCreateReview,
+  pennyAdvanceAsrJob as enginePennyAdvance,
+  pennyAttachTranscriptPackage as enginePennyAttach,
+  pennyRequestAsrJob as enginePennyRequest,
+  pennyRunAsrToCompletion as enginePennyRunToCompletion,
+  recordPennyReviewAction as engineRecordReviewAction,
+  signOffPennyReview as engineSignOffReview,
+} from './penny';
+import { evaluateTranscriptReviewGateForIncident as engineTranscriptReviewGate } from './transcriptReviewGate';
+import {
+  defaultDemoPolicy,
+  evaluateSignOffPolicyGateForIncident as engineSignOffPolicyGate,
+  updateDemoPolicy as engineUpdateDemoPolicy,
+} from './signOffPolicy';
+import { buildIncidentAuditExport, type IncidentAuditExport } from './auditExport';
+import {
+  cancelRecordingProcessingSession as engineCancelRecordingSession,
+  completeRecordingProcessingSession as engineCompleteRecordingSession,
+  createRecordingProcessingSession as engineCreateRecordingSession,
+  linkRecordingSessionToPennyPlan as engineLinkRecordingSession,
+  markRecordingCheckpoint as engineMarkRecordingCheckpoint,
+  refreshRecordingProcessingSessionLinks as engineRefreshRecordingSession,
+  startRecordingProcessingSession as engineStartRecordingSession,
+} from './recordingProcessing';
+import {
+  type CompleteLocalOfflineAsrInput,
+  completeLocalOfflineAsrForPlan as engineCompleteLocalAsr,
+  recordLocalOfflineAsrFailed as engineRecordLocalAsrFailed,
+  recordLocalOfflineAsrModelChecked as engineRecordLocalAsrModelChecked,
+  recordLocalOfflineAsrStarted as engineRecordLocalAsrStarted,
+} from './asr/localOfflineHandoff';
+import type { LocalOfflineAsrStatus } from './asr/localOfflineTypes';
 
 const STORAGE_KEY = 'mii_lite_state_v1';
 const REVIEWER = 'Dispatcher (you)';
@@ -40,6 +100,15 @@ function freshState(): MiiState {
     audit: [],
     mockCadPayloads: {},
     replay: null,
+    audioAssets: [],
+    audioTranscriptAttachments: [],
+    asrTranscriptResults: [],
+    asrJobs: [],
+    pennyPlans: [],
+    pennyTranscriptPackages: [],
+    pennyReviewStates: [],
+    demoPolicy: defaultDemoPolicy(),
+    recordingProcessingSessions: [],
   };
 }
 
@@ -53,6 +122,27 @@ function loadState(): MiiState {
     if (!parsed.units || !Array.isArray(parsed.units)) return freshState();
     // Forward-compat: older persisted state predates the replay slice.
     if (parsed.replay === undefined) parsed.replay = null;
+    // Forward-compat: older persisted state predates the audio intake slices.
+    if (!Array.isArray(parsed.audioAssets)) parsed.audioAssets = [];
+    if (!Array.isArray(parsed.audioTranscriptAttachments)) {
+      parsed.audioTranscriptAttachments = [];
+    }
+    // Forward-compat: older persisted state predates the ASR results slice.
+    if (!Array.isArray(parsed.asrTranscriptResults)) parsed.asrTranscriptResults = [];
+    // Forward-compat: older persisted state predates the ASR jobs slice.
+    if (!Array.isArray(parsed.asrJobs)) parsed.asrJobs = [];
+    // Forward-compat: older persisted state predates the PENNY slices.
+    if (!Array.isArray(parsed.pennyPlans)) parsed.pennyPlans = [];
+    if (!Array.isArray(parsed.pennyTranscriptPackages)) parsed.pennyTranscriptPackages = [];
+    if (!Array.isArray(parsed.pennyReviewStates)) parsed.pennyReviewStates = [];
+    // Forward-compat: older persisted state predates the demo policy.
+    if (!parsed.demoPolicy || !parsed.demoPolicy.signOffPolicyMode) {
+      parsed.demoPolicy = defaultDemoPolicy();
+    }
+    // Forward-compat: older persisted state predates recording sessions.
+    if (!Array.isArray(parsed.recordingProcessingSessions)) {
+      parsed.recordingProcessingSessions = [];
+    }
     return parsed;
   } catch {
     return freshState();
@@ -148,6 +238,163 @@ export const miiStore = {
   closeIncident(incidentId: string) {
     update((d) => engineCloseIncident(d, incidentId, REVIEWER));
   },
+
+  // --- Phase 2A audio intake actions ---
+  addAudioAsset(input: AddAudioAssetInput): AudioAsset {
+    return update((d) => engineAddAudioAsset(d, input));
+  },
+  attachTranscriptToAudio(
+    audioAssetId: string,
+    transcriptText: string,
+    scenarioId?: string
+  ): AudioTranscriptAttachment {
+    return update((d) => engineAttachTranscript(d, audioAssetId, transcriptText, scenarioId));
+  },
+  processAudioTranscriptAttachment(attachmentId: string): { incidentId?: string } {
+    return update((d) => engineProcessAudioAttachment(d, attachmentId, REVIEWER));
+  },
+  runMockAsrForAudio(
+    audioAssetId: string,
+    options: { scenarioId?: string; freeformTranscriptText?: string }
+  ): AsrTranscriptResult {
+    return update((d) => engineRunMockAsr(d, audioAssetId, { ...options, actor: REVIEWER }));
+  },
+  attachAsrResultToAudio(asrResultId: string): AudioTranscriptAttachment | undefined {
+    return update((d) => engineAttachAsrResult(d, asrResultId, REVIEWER));
+  },
+  requestAsrJob(
+    audioAssetId: string,
+    options: { provider: AsrProvider; scenarioId?: string; freeformTranscriptText?: string }
+  ): AsrJob {
+    return update((d) => engineRequestAsrJob(d, audioAssetId, { ...options, actor: REVIEWER }));
+  },
+  advanceAsrJob(jobId: string): AsrJob | undefined {
+    return update((d) => engineAdvanceAsrJob(d, jobId, REVIEWER));
+  },
+  runAsrJobToCompletion(jobId: string): AsrJob | undefined {
+    return update((d) => engineRunAsrJobToCompletion(d, jobId, REVIEWER));
+  },
+  cancelAsrJob(jobId: string): AsrJob | undefined {
+    return update((d) => engineCancelAsrJob(d, jobId, REVIEWER));
+  },
+
+  // --- Phase 2E PENNY orchestration actions ---
+  createPennyPlan(input: {
+    audioAssetId: string;
+    provider: AsrProvider;
+    scenarioId?: string;
+    freeformTranscriptText?: string;
+    notes?: string;
+  }): PennyTranscriptionPlan {
+    return update((d) => engineCreatePennyPlan(d, { ...input, actor: REVIEWER }));
+  },
+  pennyRequestAsrJob(planId: string): PennyTranscriptionPlan | undefined {
+    return update((d) => enginePennyRequest(d, planId, REVIEWER));
+  },
+  pennyAdvanceAsrJob(planId: string): PennyTranscriptionPlan | undefined {
+    return update((d) => enginePennyAdvance(d, planId, REVIEWER));
+  },
+  pennyRunAsrToCompletion(planId: string): PennyTranscriptionPlan | undefined {
+    return update((d) => enginePennyRunToCompletion(d, planId, REVIEWER));
+  },
+  evaluateAsrResultForPenny(planId: string): PennyTranscriptPackage | undefined {
+    return update((d) => engineEvaluatePenny(d, planId, REVIEWER));
+  },
+  pennyAttachTranscriptPackage(planId: string): AudioTranscriptAttachment | undefined {
+    return update((d) => enginePennyAttach(d, planId, REVIEWER));
+  },
+
+  // --- Phase 2F PENNY human review actions ---
+  getOrCreatePennyReviewState(planId: string, packageId: string): PennyReviewState {
+    return update((d) => engineGetOrCreateReview(d, planId, packageId, REVIEWER));
+  },
+  recordPennyReviewAction(input: {
+    planId: string;
+    packageId: string;
+    issueId?: string;
+    actionType: PennyReviewActionType;
+    note?: string;
+  }): PennyReviewState | undefined {
+    return update((d) => engineRecordReviewAction(d, { ...input, actor: REVIEWER }));
+  },
+  evaluatePennyReviewReadiness(planId: string, packageId: string): PennyReviewState | undefined {
+    return update((d) => engineEvaluateReviewReadiness(d, planId, packageId, REVIEWER));
+  },
+  signOffPennyReview(
+    planId: string,
+    packageId: string,
+    note?: string
+  ): PennyReviewState | undefined {
+    return update((d) => engineSignOffReview(d, { planId, packageId, note, actor: REVIEWER }));
+  },
+  // Read-only transcript-readiness gate — computed against the current snapshot.
+  pennyQualityGate(planId: string, packageId: string): PennyQualityGateResult {
+    return engineEvaluateQualityGate(state, planId, packageId);
+  },
+  // Read-only transcript review safety gate for an incident.
+  transcriptReviewGate(incidentId: string): TranscriptReviewGateResult {
+    return engineTranscriptReviewGate(state, incidentId);
+  },
+  // Read-only sign-off policy gate for an incident.
+  signOffPolicyGate(incidentId: string): SignOffPolicyGateResult {
+    return engineSignOffPolicyGate(state, incidentId);
+  },
+  updateDemoPolicy(mode: import('./types').SignOffPolicyMode) {
+    return update((d) => engineUpdateDemoPolicy(d, mode, REVIEWER));
+  },
+  // Read-only local audit export builder for an incident.
+  buildAuditExport(incidentId: string): IncidentAuditExport {
+    return buildIncidentAuditExport(state, incidentId);
+  },
+
+  // --- Phase 3A Play-to-Process recording session actions ---
+  createRecordingProcessingSession(input: { audioAssetId: string; notes?: string }) {
+    return update((d) => engineCreateRecordingSession(d, { ...input, actor: REVIEWER }));
+  },
+  startRecordingProcessingSession(sessionId: string) {
+    return update((d) => engineStartRecordingSession(d, { sessionId, actor: REVIEWER }));
+  },
+  markRecordingCheckpoint(
+    sessionId: string,
+    kind: import('./types').HumanCheckpointKind,
+    summary?: string
+  ) {
+    return update((d) => engineMarkRecordingCheckpoint(d, { sessionId, kind, summary, actor: REVIEWER }));
+  },
+  linkRecordingSessionToPennyPlan(sessionId: string, pennyPlanId: string) {
+    return update((d) => engineLinkRecordingSession(d, { sessionId, pennyPlanId, actor: REVIEWER }));
+  },
+  refreshRecordingProcessingSessionLinks(sessionId: string) {
+    return update((d) => engineRefreshRecordingSession(d, sessionId));
+  },
+  completeRecordingProcessingSession(sessionId: string) {
+    return update((d) => engineCompleteRecordingSession(d, sessionId, REVIEWER));
+  },
+  cancelRecordingProcessingSession(sessionId: string) {
+    return update((d) => engineCancelRecordingSession(d, sessionId, REVIEWER));
+  },
+
+  // --- Phase 3B local/offline ASR handoff actions ---
+  recordLocalOfflineAsrModelChecked(available: boolean, status: LocalOfflineAsrStatus) {
+    update((d) => engineRecordLocalAsrModelChecked(d, { available, status, actor: REVIEWER }));
+  },
+  recordLocalOfflineAsrStarted(audioAssetId: string, filename?: string) {
+    update((d) => engineRecordLocalAsrStarted(d, { audioAssetId, filename, actor: REVIEWER }));
+  },
+  recordLocalOfflineAsrFailed(input: {
+    audioAssetId: string;
+    filename?: string;
+    errorMessage: string;
+    durationMs?: number;
+  }) {
+    update((d) => engineRecordLocalAsrFailed(d, { ...input, actor: REVIEWER }));
+  },
+  completeLocalOfflineAsrForPlan(input: Omit<CompleteLocalOfflineAsrInput, 'actor'>) {
+    return update((d) => engineCompleteLocalAsr(d, { ...input, actor: REVIEWER }));
+  },
+  clearAudioIntake() {
+    update((d) => engineClearAudioIntake(d));
+  },
   reset() {
     state = freshState();
     persist();
@@ -191,3 +438,33 @@ export function useMockCadPayload(incidentId: string): MockCadPayload | undefine
 export function useReplay(): ReplayState | null {
   return useStore((s) => s.replay);
 }
+export function useAudioAssets(): AudioAsset[] {
+  return useStore((s) => s.audioAssets);
+}
+export function useAudioTranscriptAttachments(): AudioTranscriptAttachment[] {
+  return useStore((s) => s.audioTranscriptAttachments);
+}
+export function useAsrTranscriptResults(): AsrTranscriptResult[] {
+  return useStore((s) => s.asrTranscriptResults);
+}
+export function useAsrJobs(): AsrJob[] {
+  return useStore((s) => s.asrJobs);
+}
+export function usePennyPlans(): PennyTranscriptionPlan[] {
+  return useStore((s) => s.pennyPlans);
+}
+export function usePennyTranscriptPackages(): PennyTranscriptPackage[] {
+  return useStore((s) => s.pennyTranscriptPackages);
+}
+export function usePennyReviewStates(): PennyReviewState[] {
+  return useStore((s) => s.pennyReviewStates);
+}
+export function useDemoPolicy(): import('./types').MiiDemoPolicy {
+  return useStore((s) => s.demoPolicy);
+}
+export function useRecordingProcessingSessions(): import('./types').RecordingProcessingSession[] {
+  return useStore((s) => s.recordingProcessingSessions);
+}
+
+// Re-export the pure placeholder builder so client components use one source.
+export { createPlaceholderAudioAssetInput } from './processor';

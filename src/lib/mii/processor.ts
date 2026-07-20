@@ -1,4 +1,11 @@
 import type {
+  AsrJob,
+  AsrProvider,
+  AsrTranscriptResult,
+  AudioAsset,
+  AudioSourceType,
+  AudioTranscriptAttachment,
+  AudioWaveformPoint,
   CueEvent,
   IncidentContext,
   MockCadPayload,
@@ -8,6 +15,11 @@ import type {
   Unit,
   UnitRecommendation,
 } from './types';
+import { mockAsrAdapter } from './asr/mockAsrAdapter';
+import { getAsrProviderDefinition } from './asr/providerRegistry';
+import { createDeterministicWaveform, estimateDurationFromSegments } from './audioTimeline';
+import { evaluateTranscriptReviewGateForIncident } from './transcriptReviewGate';
+import type { IncidentTranscriptReviewSnapshot } from './types';
 import { AGENCY, TENANT, getScenario } from './seed';
 import { detectCues } from './cueDetector';
 import { extractFields } from './extractor';
@@ -35,6 +47,15 @@ export interface MiiState {
   audit: import('./types').AuditEvent[];
   mockCadPayloads: Record<string, MockCadPayload>;
   replay: ReplayState | null;
+  audioAssets: AudioAsset[];
+  audioTranscriptAttachments: AudioTranscriptAttachment[];
+  asrTranscriptResults: AsrTranscriptResult[];
+  asrJobs: AsrJob[];
+  pennyPlans: import('./types').PennyTranscriptionPlan[];
+  pennyTranscriptPackages: import('./types').PennyTranscriptPackage[];
+  pennyReviewStates: import('./types').PennyReviewState[];
+  demoPolicy: import('./types').MiiDemoPolicy;
+  recordingProcessingSessions: import('./types').RecordingProcessingSession[];
 }
 
 const SYSTEM_ACTOR = 'MII_lite engine';
@@ -772,4 +793,632 @@ export function closeIncident(draft: MiiState, incidentId: string, actor: string
     incidentId,
     summary: `Incident ${incident.eventNumber} closed by reviewer.`,
   });
+}
+
+// --- Phase 2A: recorded audio intake -------------------------------------
+// Everything here stays local/in-browser/deterministic. Audio is metadata +
+// an optional session-local blob URL; the transcript is what actually drives
+// the existing MII pipeline. No ASR, no uploads, no external systems.
+
+export interface AddAudioAssetInput {
+  filename: string;
+  sourceType: AudioSourceType;
+  mimeType: string;
+  sizeBytes: number;
+  durationSeconds?: number;
+  objectUrl?: string;
+  notes?: string;
+  waveform?: AudioWaveformPoint[];
+  sourceLabel?: string;
+  sourceDevice?: string;
+  originalRecording?: boolean;
+  recordingProvenanceNote?: string;
+}
+
+export function addAudioAsset(draft: MiiState, input: AddAudioAssetInput): AudioAsset {
+  const asset: AudioAsset = {
+    id: makeId('audio'),
+    filename: input.filename,
+    sourceType: input.sourceType,
+    mimeType: input.mimeType,
+    sizeBytes: input.sizeBytes,
+    durationSeconds: input.durationSeconds,
+    objectUrl: input.objectUrl,
+    notes: input.notes,
+    createdAt: nowIso(),
+    status: 'UPLOADED',
+    waveform: input.waveform,
+    sourceLabel: input.sourceLabel,
+    sourceDevice: input.sourceDevice,
+    originalRecording: input.originalRecording,
+    recordingProvenanceNote: input.recordingProvenanceNote,
+  };
+  draft.audioAssets.push(asset);
+  return asset;
+}
+
+// Deterministic placeholder input (Phase 2D). Shared by the /audio UI and the
+// verification harness so both agree on fixture duration + waveform.
+const PLACEHOLDER_DURATION_SECONDS = 18;
+
+export function createPlaceholderAudioAssetInput(notes?: string): AddAudioAssetInput {
+  return {
+    filename: 'simulated-radio-clip.wav',
+    sourceType: 'MANUAL_PLACEHOLDER',
+    mimeType: 'audio/wav',
+    sizeBytes: 0,
+    durationSeconds: PLACEHOLDER_DURATION_SECONDS,
+    waveform: createDeterministicWaveform(PLACEHOLDER_DURATION_SECONDS),
+    notes: notes ?? 'Placeholder audio artifact for transcript-first processing.',
+  };
+}
+
+export function attachTranscriptToAudio(
+  draft: MiiState,
+  audioAssetId: string,
+  transcriptText: string,
+  scenarioId?: string
+): AudioTranscriptAttachment {
+  const attachment: AudioTranscriptAttachment = {
+    id: makeId('att'),
+    audioAssetId,
+    scenarioId,
+    transcriptText,
+    createdAt: nowIso(),
+    transcriptLineIds: [],
+  };
+  draft.audioTranscriptAttachments.push(attachment);
+  const asset = draft.audioAssets.find((a) => a.id === audioAssetId);
+  if (asset && asset.status === 'UPLOADED') asset.status = 'TRANSCRIPT_ATTACHED';
+  return attachment;
+}
+
+// Best-effort local parser for freeform transcript text. Each non-empty line
+// becomes one transcript line. "Speaker: text" splits on the first colon;
+// otherwise the speaker is UNKNOWN. Purely deterministic string handling.
+function parseFreeformTranscript(text: string): { speaker: string; text: string }[] {
+  return text
+    .split('\n')
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0)
+    .map((l) => {
+      const idx = l.indexOf(':');
+      // Treat the prefix as a speaker only when it is a short, label-like token.
+      if (idx > 0 && idx <= 24 && !l.slice(0, idx).includes(' — ')) {
+        const speaker = l.slice(0, idx).trim();
+        const body = l.slice(idx + 1).trim();
+        if (speaker && body) return { speaker, text: body };
+      }
+      return { speaker: 'UNKNOWN', text: l };
+    });
+}
+
+export function processAudioTranscriptAttachment(
+  draft: MiiState,
+  attachmentId: string,
+  actor: string = SYSTEM_ACTOR
+): { incidentId?: string } {
+  const attachment = draft.audioTranscriptAttachments.find((a) => a.id === attachmentId);
+  if (!attachment) return {};
+  const asset = draft.audioAssets.find((a) => a.id === attachment.audioAssetId);
+  const filename = asset?.filename ?? 'audio asset';
+
+  let incidentId: string | undefined;
+  const lineIds: string[] = [];
+  let correlationId: string;
+
+  if (attachment.scenarioId && getScenario(attachment.scenarioId)) {
+    // Mode 1 — reuse the exact seeded-scenario processing path.
+    const before = draft.transcriptLines.length;
+    const result = runScenario(draft, attachment.scenarioId, actor);
+    correlationId = result.correlationId;
+    incidentId = result.incidentId;
+    for (const l of draft.transcriptLines.slice(before)) lineIds.push(l.id);
+  } else {
+    // Mode 2 — best-effort freeform: parse lines and drive the same lower-level
+    // per-line processor used by scenarios/replay.
+    correlationId = newCorrelationId();
+    audit(draft, {
+      correlationId,
+      action: 'SCENARIO_STARTED',
+      actor,
+      summary: `Audio transcript processing started (freeform) for ${filename}.`,
+    });
+    const ctx: ScenarioCtx = { routingOpened: false };
+    const baseTime = Date.parse(nowIso());
+    parseFreeformTranscript(attachment.transcriptText).forEach((p, idx) => {
+      const line: TranscriptLine = {
+        id: makeId('line'),
+        speaker: p.speaker,
+        text: p.text,
+        timestamp: new Date(baseTime + idx * 4000).toISOString(),
+        confidence: 0.85,
+        processed: false,
+        cueEvents: [],
+      };
+      draft.transcriptLines.push(line);
+      lineIds.push(line.id);
+      processTranscriptLine(draft, line, ctx, correlationId);
+    });
+    if (ctx.activeIncidentId) {
+      recommendUnitsFor(draft, ctx.activeIncidentId, correlationId);
+    }
+    incidentId = ctx.activeIncidentId;
+  }
+
+  attachment.processedAt = nowIso();
+  attachment.activeIncidentId = incidentId;
+  attachment.transcriptLineIds = lineIds;
+  if (asset) asset.status = 'PROCESSED';
+
+  audit(draft, {
+    correlationId,
+    action: 'AUDIO_TRANSCRIPT_PROCESSED',
+    actor,
+    incidentId,
+    summary: `Audio transcript processed for ${filename}.`,
+    after: { attachmentId, lineCount: lineIds.length, incidentId },
+  });
+  if (incidentId) {
+    const incident = draft.incidents.find((i) => i.id === incidentId);
+    audit(draft, {
+      correlationId,
+      action: 'AUDIO_TRANSCRIPT_PROCESSED',
+      actor,
+      incidentId,
+      summary: `Incident ${incident?.eventNumber ?? incidentId} linked to audio asset ${filename}.`,
+    });
+  } else {
+    audit(draft, {
+      correlationId,
+      action: 'AUDIO_TRANSCRIPT_PROCESSED',
+      actor,
+      summary: `Audio attachment produced no incident for ${filename}.`,
+    });
+  }
+
+  // Phase 2H — capture a transcript review snapshot + incident audit linkage when
+  // the incident was created/updated from a PENNY-reviewed transcript package.
+  // Requires attachment.activeIncidentId to already be set (done above).
+  if (incidentId) {
+    captureTranscriptReviewSnapshot(draft, incidentId, correlationId, actor);
+  }
+
+  return { incidentId };
+}
+
+function captureTranscriptReviewSnapshot(
+  draft: MiiState,
+  incidentId: string,
+  correlationId: string,
+  actor: string
+): void {
+  const gate = evaluateTranscriptReviewGateForIncident(draft, incidentId);
+  if (gate.status === 'NOT_APPLICABLE') return;
+  const incident = draft.incidents.find((i) => i.id === incidentId);
+  if (!incident) return;
+
+  const reviewState = gate.linkedReviewStateId
+    ? draft.pennyReviewStates.find((r) => r.id === gate.linkedReviewStateId)
+    : undefined;
+
+  const snapshot: IncidentTranscriptReviewSnapshot = {
+    status: gate.status,
+    planId: gate.linkedPlanId,
+    packageId: gate.linkedPackageId,
+    reviewStateId: gate.linkedReviewStateId,
+    signedOffBy: reviewState?.signedOffBy,
+    signedOffAt: reviewState?.signedOffAt,
+    summary: gate.summary,
+    blockingCount: gate.blockingCount,
+    warningCount: gate.warningCount,
+    unresolvedWarningCount: gate.unresolvedWarningCount,
+    unresolvedBlockingCount: gate.unresolvedBlockingCount,
+    capturedAt: nowIso(),
+  };
+  incident.transcriptReviewSnapshot = snapshot;
+
+  audit(draft, {
+    correlationId,
+    action: 'INCIDENT_TRANSCRIPT_REVIEW_LINKED',
+    actor,
+    incidentId,
+    summary: 'Incident linked to PENNY-reviewed transcript package.',
+    after: { planId: snapshot.planId, packageId: snapshot.packageId },
+  });
+  audit(draft, {
+    correlationId,
+    action: 'INCIDENT_TRANSCRIPT_REVIEW_SNAPSHOT',
+    actor,
+    incidentId,
+    summary: `Transcript review snapshot captured: ${snapshot.status}.`,
+    after: snapshot,
+  });
+  if (reviewState?.signedOffBy) {
+    audit(draft, {
+      correlationId,
+      action: 'INCIDENT_TRANSCRIPT_SIGNOFF_RECORDED',
+      actor,
+      incidentId,
+      summary: `Transcript review sign-off recorded for incident: ${reviewState.signedOffBy}.`,
+      after: { signedOffBy: reviewState.signedOffBy, signedOffAt: reviewState.signedOffAt },
+    });
+  }
+}
+
+export function clearAudioIntake(draft: MiiState): void {
+  draft.audioAssets = [];
+  draft.audioTranscriptAttachments = [];
+  draft.asrTranscriptResults = [];
+  draft.asrJobs = [];
+  draft.pennyPlans = [];
+  draft.pennyTranscriptPackages = [];
+  draft.pennyReviewStates = [];
+  draft.recordingProcessingSessions = [];
+}
+
+// --- Phase 2D: derive display-only audio metadata ------------------------
+// Backfill deterministic duration + waveform from an ASR result. Never touches
+// objectUrl or file data; audits only when it actually derives something.
+function backfillAudioMetadataFromResult(
+  draft: MiiState,
+  asset: AudioAsset | undefined,
+  result: AsrTranscriptResult,
+  actor: string
+): void {
+  if (!asset) return;
+  let derivedDuration = false;
+  let derivedWaveform = false;
+
+  if (asset.durationSeconds == null) {
+    const est = estimateDurationFromSegments(result.segments);
+    if (est != null) {
+      asset.durationSeconds = est;
+      derivedDuration = true;
+    }
+  }
+  if (asset.durationSeconds != null && (!asset.waveform || asset.waveform.length === 0)) {
+    asset.waveform = createDeterministicWaveform(asset.durationSeconds);
+    derivedWaveform = true;
+  }
+
+  if (derivedDuration || derivedWaveform) {
+    const waveform: AudioWaveformPoint[] = asset.waveform ?? [];
+    audit(draft, {
+      correlationId: newCorrelationId(),
+      action: 'AUDIO_METADATA_DERIVED',
+      actor,
+      summary: derivedDuration
+        ? `Audio duration and waveform metadata derived from ASR segments for ${asset.filename}.`
+        : `Audio waveform metadata generated for ${asset.filename}.`,
+      after: { durationSeconds: asset.durationSeconds, waveformPoints: waveform.length },
+    });
+  }
+}
+
+// --- Phase 2B: mock ASR adapter shell ------------------------------------
+// Runs the deterministic mock adapter and records an ASR-shaped result. This is
+// the plug where a real (async) ASR adapter can later connect. No audio content
+// is transcribed and no network is used.
+
+export function runMockAsrForAudio(
+  draft: MiiState,
+  audioAssetId: string,
+  options: { scenarioId?: string; freeformTranscriptText?: string; actor?: string }
+): AsrTranscriptResult {
+  const actor = options.actor ?? SYSTEM_ACTOR;
+  const asset = draft.audioAssets.find((a) => a.id === audioAssetId);
+  const filename = asset?.filename ?? 'audio asset';
+
+  // If the asset is missing we still produce a FAILED, audited result so the UI
+  // has something deterministic to render.
+  const result = asset
+    ? mockAsrAdapter.transcribe({
+        audioAsset: asset,
+        scenarioId: options.scenarioId,
+        freeformTranscriptText: options.freeformTranscriptText,
+      })
+    : {
+        id: makeId('asr'),
+        audioAssetId,
+        provider: 'UNCONFIGURED' as const,
+        status: 'FAILED' as const,
+        transcriptText: '',
+        segments: [],
+        createdAt: nowIso(),
+        error: 'Audio asset not found for mock ASR.',
+      };
+
+  draft.asrTranscriptResults.push(result);
+
+  // Deliberately do NOT change the AudioAsset status here — it stays UPLOADED
+  // until a transcript is actually attached. The ASR result is tracked
+  // separately so generating a transcript and attaching it remain distinct
+  // stages of the pipeline.
+
+  const correlationId = newCorrelationId();
+  if (result.status === 'COMPLETED') {
+    backfillAudioMetadataFromResult(draft, asset, result, actor);
+    const via =
+      result.provider === 'MOCK_SCENARIO' && result.scenarioId
+        ? `${getScenario(result.scenarioId)?.title ?? result.scenarioId}`
+        : 'freeform text';
+    audit(draft, {
+      correlationId,
+      action: 'ASR_TRANSCRIPT_GENERATED',
+      actor,
+      summary: `Mock ASR transcript generated for ${filename} using ${via}.`,
+      after: { asrResultId: result.id, provider: result.provider, segments: result.segments.length },
+    });
+  } else {
+    audit(draft, {
+      correlationId,
+      action: 'ASR_TRANSCRIPT_GENERATED',
+      actor,
+      summary: `Mock ASR failed for ${filename}: ${result.error ?? 'unknown error'}.`,
+      after: { asrResultId: result.id, provider: result.provider },
+    });
+  }
+
+  return result;
+}
+
+export function attachAsrResultToAudio(
+  draft: MiiState,
+  asrResultId: string,
+  actor: string = SYSTEM_ACTOR
+): AudioTranscriptAttachment | undefined {
+  const result = draft.asrTranscriptResults.find((r) => r.id === asrResultId);
+  if (!result || result.status !== 'COMPLETED') return undefined;
+
+  // Reuse the existing transcript-first attachment behavior, then tag the
+  // attachment with its originating ASR result.
+  const attachment = attachTranscriptToAudio(
+    draft,
+    result.audioAssetId,
+    result.transcriptText,
+    result.scenarioId
+  );
+  attachment.asrResultId = result.id;
+
+  const asset = draft.audioAssets.find((a) => a.id === result.audioAssetId);
+  audit(draft, {
+    correlationId: newCorrelationId(),
+    action: 'ASR_TRANSCRIPT_ATTACHED',
+    actor,
+    summary: `ASR transcript attached to audio asset ${asset?.filename ?? result.audioAssetId}.`,
+    after: { attachmentId: attachment.id, asrResultId: result.id },
+  });
+  return attachment;
+}
+
+// --- Phase 2C: async ASR job lifecycle -----------------------------------
+// Deterministic, one-step-per-call state machine that models what a real async
+// ASR provider's lifecycle would look like. All providers are mock/local — no
+// real transcription, no network, no uploads.
+
+const TERMINAL_JOB_STATUSES: AsrJob['status'][] = ['COMPLETED', 'FAILED', 'CANCELLED'];
+
+function isTerminalJob(job: AsrJob): boolean {
+  return TERMINAL_JOB_STATUSES.includes(job.status);
+}
+
+function pushJobEvent(
+  job: AsrJob,
+  status: AsrJob['status'],
+  step: import('./types').AsrJobStep | undefined,
+  summary: string
+): void {
+  job.events.push({
+    id: makeId('jobev'),
+    jobId: job.id,
+    status,
+    step,
+    summary,
+    createdAt: nowIso(),
+  });
+}
+
+function failedAsrResult(
+  audioAssetId: string,
+  provider: AsrProvider,
+  error: string
+): AsrTranscriptResult {
+  return {
+    id: makeId('asr'),
+    audioAssetId,
+    provider,
+    status: 'FAILED',
+    transcriptText: '',
+    segments: [],
+    createdAt: nowIso(),
+    error,
+  };
+}
+
+// Produce the ASR result for a job's provider. Mock providers use the existing
+// deterministic adapter; reserved/unconfigured providers fail safely.
+function produceAsrResultForJob(draft: MiiState, job: AsrJob): AsrTranscriptResult {
+  const asset = draft.audioAssets.find((a) => a.id === job.audioAssetId);
+  if (!asset) {
+    return failedAsrResult(job.audioAssetId, 'UNCONFIGURED', 'Audio asset not found for ASR job.');
+  }
+  switch (job.provider) {
+    case 'MOCK_SCENARIO':
+      return mockAsrAdapter.transcribe({ audioAsset: asset, scenarioId: job.scenarioId });
+    case 'MOCK_FREEFORM':
+      return mockAsrAdapter.transcribe({
+        audioAsset: asset,
+        freeformTranscriptText: job.freeformTranscriptText,
+      });
+    case 'LOCAL_PLACEHOLDER':
+      return failedAsrResult(
+        asset.id,
+        'LOCAL_PLACEHOLDER',
+        'Local Placeholder Adapter is reserved for a future offline ASR implementation.'
+      );
+    case 'UNCONFIGURED':
+    default:
+      return failedAsrResult(asset.id, 'UNCONFIGURED', 'No ASR provider configured.');
+  }
+}
+
+export function requestAsrJob(
+  draft: MiiState,
+  audioAssetId: string,
+  options: {
+    provider: AsrProvider;
+    scenarioId?: string;
+    freeformTranscriptText?: string;
+    actor?: string;
+  }
+): AsrJob {
+  const actor = options.actor ?? SYSTEM_ACTOR;
+  const asset = draft.audioAssets.find((a) => a.id === audioAssetId);
+  const filename = asset?.filename ?? 'audio asset';
+  const providerDef = getAsrProviderDefinition(options.provider);
+
+  const job: AsrJob = {
+    id: makeId('job'),
+    audioAssetId,
+    provider: options.provider,
+    status: 'REQUESTED',
+    requestedAt: nowIso(),
+    scenarioId: options.scenarioId,
+    freeformTranscriptText: options.freeformTranscriptText,
+    events: [],
+  };
+  pushJobEvent(job, 'REQUESTED', 'SELECT_PROVIDER', `ASR job requested using ${providerDef.label}.`);
+  draft.asrJobs.push(job);
+
+  // Group all of a job's audit events under its id for readable correlation.
+  audit(draft, {
+    correlationId: job.id,
+    action: 'ASR_JOB_REQUESTED',
+    actor,
+    summary: `ASR job requested for ${filename} using ${providerDef.label}.`,
+    after: { jobId: job.id, provider: job.provider },
+  });
+  return job;
+}
+
+export function advanceAsrJob(
+  draft: MiiState,
+  jobId: string,
+  actor: string = SYSTEM_ACTOR
+): AsrJob | undefined {
+  const job = draft.asrJobs.find((j) => j.id === jobId);
+  if (!job) return undefined;
+  if (isTerminalJob(job)) return job;
+
+  const asset = draft.audioAssets.find((a) => a.id === job.audioAssetId);
+  const filename = asset?.filename ?? 'audio asset';
+
+  // REQUESTED → QUEUED (validate the audio asset first).
+  if (job.status === 'REQUESTED') {
+    if (!asset) {
+      job.status = 'FAILED';
+      job.failedAt = nowIso();
+      job.error = 'Audio asset not found for ASR job.';
+      pushJobEvent(job, 'FAILED', 'VALIDATE_AUDIO_ASSET', `ASR job failed: ${job.error}.`);
+      audit(draft, {
+        correlationId: job.id,
+        action: 'ASR_JOB_FAILED',
+        actor,
+        summary: `ASR job failed for ${filename}: ${job.error}.`,
+        after: { jobId: job.id },
+      });
+      return job;
+    }
+    job.status = 'QUEUED';
+    job.queuedAt = nowIso();
+    pushJobEvent(job, 'QUEUED', 'VALIDATE_AUDIO_ASSET', 'Audio asset validated; ASR job queued.');
+    return job;
+  }
+
+  // QUEUED → TRANSCRIBING.
+  if (job.status === 'QUEUED') {
+    job.status = 'TRANSCRIBING';
+    job.startedAt = nowIso();
+    pushJobEvent(job, 'TRANSCRIBING', 'TRANSCRIBE', 'Mock ASR transcription started.');
+    return job;
+  }
+
+  // TRANSCRIBING → terminal (run provider logic).
+  if (job.status === 'TRANSCRIBING') {
+    const result = produceAsrResultForJob(draft, job);
+    // Store the result (including failures) for provenance.
+    draft.asrTranscriptResults.push(result);
+    job.resultId = result.id;
+
+    if (result.status === 'COMPLETED') {
+      backfillAudioMetadataFromResult(draft, asset, result, actor);
+      job.status = 'COMPLETED';
+      job.completedAt = nowIso();
+      pushJobEvent(job, 'COMPLETED', 'COMPLETE', 'ASR job completed and transcript result stored.');
+      audit(draft, {
+        correlationId: job.id,
+        action: 'ASR_JOB_COMPLETED',
+        actor,
+        summary: `ASR job completed for ${filename}; transcript result stored (${result.segments.length} segments).`,
+        after: { jobId: job.id, resultId: result.id, provider: result.provider },
+      });
+    } else {
+      job.status = 'FAILED';
+      job.failedAt = nowIso();
+      job.error = result.error;
+      pushJobEvent(job, 'FAILED', 'COMPLETE', `ASR job failed: ${result.error ?? 'unknown error'}.`);
+      audit(draft, {
+        correlationId: job.id,
+        action: 'ASR_JOB_FAILED',
+        actor,
+        summary: `ASR job failed for ${filename}: ${result.error ?? 'unknown error'}.`,
+        after: { jobId: job.id, resultId: result.id, provider: result.provider },
+      });
+    }
+    return job;
+  }
+
+  return job;
+}
+
+export function runAsrJobToCompletion(
+  draft: MiiState,
+  jobId: string,
+  actor: string = SYSTEM_ACTOR
+): AsrJob | undefined {
+  const job = draft.asrJobs.find((j) => j.id === jobId);
+  if (!job) return undefined;
+  let guard = 0;
+  // Longest path is REQUESTED → QUEUED → TRANSCRIBING → terminal (3 steps);
+  // the guard is a generous backstop.
+  while (!isTerminalJob(job) && guard < 10) {
+    advanceAsrJob(draft, jobId, actor);
+    guard += 1;
+  }
+  return job;
+}
+
+export function cancelAsrJob(
+  draft: MiiState,
+  jobId: string,
+  actor: string = SYSTEM_ACTOR
+): AsrJob | undefined {
+  const job = draft.asrJobs.find((j) => j.id === jobId);
+  if (!job) return undefined;
+  if (isTerminalJob(job)) return job;
+
+  const asset = draft.audioAssets.find((a) => a.id === job.audioAssetId);
+  const filename = asset?.filename ?? 'audio asset';
+  job.status = 'CANCELLED';
+  job.cancelledAt = nowIso();
+  pushJobEvent(job, 'CANCELLED', undefined, 'ASR job cancelled by operator.');
+  audit(draft, {
+    correlationId: job.id,
+    action: 'ASR_JOB_CANCELLED',
+    actor,
+    summary: `ASR job cancelled for ${filename}.`,
+    after: { jobId: job.id },
+  });
+  return job;
 }
